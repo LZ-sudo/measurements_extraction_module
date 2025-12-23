@@ -153,13 +153,68 @@ hand_detector.close()
 # Use the results for measurements...
 ```
 
+### 5. body_segmentation.py
+Performs full-body segmentation using MediaPipe's selfie segmenter.
+
+**Features:**
+- Segments entire body from background
+- Outputs normalized height coordinates (top/bottom y-coordinates)
+- Uses confidence mask thresholding
+- Returns JSON format
+
+**Usage:**
+```python
+from mediapipe_detection import BodySegmenter
+
+segmenter = BodySegmenter()
+height_data = segmenter.segment(image)
+segmenter.close()
+```
+
+**Command Line:**
+```bash
+python body_segmentation.py input.jpg -o output.json
+```
+
+### 6. extract_norm_per_cm.py
+Extracts calibration factor from measurement backdrop images using OpenCV line detection and Tesseract OCR.
+
+**Features:**
+- Detects horizontal lines using Hough Line Transform
+- Extracts measurement numbers using Tesseract OCR (high accuracy for printed text)
+- Calculates cm_per_normalized_unit for converting measurements
+- Returns calibration confidence level
+- Debug mode to troubleshoot OCR detection
+
+**Prerequisites:**
+- Tesseract OCR must be installed locally
+- Default path: `C:\Program Files\Tesseract-OCR\tesseract.exe` (Windows)
+
+**Usage:**
+```python
+from measurement_extraction import extract_calibration
+
+calibration_data = extract_calibration("backdrop.jpg", "calibration.json")
+```
+
+**Command Line:**
+```bash
+python measurement_extraction/extract_norm_per_cm.py input.jpg -o calibration.json
+```
+
+Specify custom Tesseract path:
+```bash
+python measurement_extraction/extract_norm_per_cm.py input.jpg -o calibration.json --tesseract-cmd "path/to/tesseract.exe"
+```
+
 ## Notes
 
 - All images are expected in BGR format (OpenCV default)
 - Internally converted to RGB for Mediapipe processing
-- Models are downloaded to the current working directory
+- Models are downloaded automatically on first use
 - For best results, ensure good lighting and clear subject visibility
 - Hair segmentation may require tuning for different hair colors/types
+- Tesseract OCR 5.5.0 requires local installation (https://github.com/tesseract-ocr/tesseract/releases/download/5.5.0/tesseract-ocr-w64-setup-5.5.0.20241111.exe)
 
 ## Mediapipe API Version
 
@@ -173,3 +228,4 @@ This module uses the new Mediapipe Tasks API (mediapipe>=0.10.0):
 - [Mediapipe Pose Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker/python)
 - [Mediapipe Face Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker/python)
 - [Mediapipe Hand Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/hand_landmarker/python)
+- [Mediapipe Image Segmentation](https://ai.google.dev/edge/mediapipe/solutions/vision/image_segmenter)
