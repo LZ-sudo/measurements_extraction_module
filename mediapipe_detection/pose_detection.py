@@ -2,16 +2,14 @@
 Pose Detection Module using Google Mediapipe
 
 This script detects pose landmarks in an image using Google's Mediapipe Pose solution.
-It takes an input image, processes it to detect pose landmarks, draws the landmarks
-and connections on the image, and returns the annotated image.
+It extracts specific landmark pairs needed for body measurements and returns them as JSON.
 """
 
 import cv2
 import mediapipe as mp
 import numpy as np
-from typing import Tuple, Optional
-from mediapipe import solutions
-from mediapipe.framework.formats import landmark_pb2
+import json
+from typing import Dict, Optional
 
 
 class PoseDetector:
@@ -79,17 +77,28 @@ class PoseDetector:
 
         return local_path
 
-    def detect(self, image: np.ndarray) -> Tuple[np.ndarray, Optional[object]]:
+    def detect(self, image: np.ndarray) -> Dict:
         """
-        Detect pose landmarks in an image and draw them.
+        Detect pose landmarks in an image and extract measurement landmark pairs.
 
         Args:
             image: Input image as numpy array (BGR format).
 
         Returns:
-            Tuple of (annotated_image, pose_landmarks)
-            - annotated_image: Image with pose landmarks drawn
-            - pose_landmarks: Detected pose landmarks object (or None if not detected)
+            Dictionary containing normalized landmark coordinates for measurements:
+            {
+                "head_width": {"landmark_7": {"x": ..., "y": ..., "z": ...}, "landmark_8": {...}},
+                "shoulder_width": {"landmark_11": {...}, "landmark_12": {...}},
+                "hip_width": {"landmark_23": {...}, "landmark_24": {...}},
+                "upper_arm_length": {
+                    "left": {"landmark_11": {...}, "landmark_13": {...}},
+                    "right": {"landmark_12": {...}, "landmark_14": {...}}
+                },
+                "forearm_length": {
+                    "left": {"landmark_13": {...}, "landmark_15": {...}},
+                    "right": {"landmark_14": {...}, "landmark_16": {...}}
+                }
+            }
         """
         # Convert BGR to RGB
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
@@ -100,44 +109,77 @@ class PoseDetector:
         # Process the image
         results = self.landmarker.detect(mp_image)
 
-        # Create a copy of the image for annotation
-        annotated_image = image.copy()
+        # Initialize result dictionary
+        landmark_pairs = {}
 
-        # Draw pose landmarks if detected
+        # Extract landmark pairs if detected
         if results.pose_landmarks:
-            for pose_landmarks in results.pose_landmarks:
-                # Convert to landmark_pb2 format for drawing
-                pose_landmarks_proto = landmark_pb2.NormalizedLandmarkList()
-                pose_landmarks_proto.landmark.extend([
-                    landmark_pb2.NormalizedLandmark(x=landmark.x, y=landmark.y, z=landmark.z)
-                    for landmark in pose_landmarks
-                ])
+            pose_landmarks = results.pose_landmarks[0]  # Get first person's landmarks
 
-                # Draw landmarks
-                solutions.drawing_utils.draw_landmarks(
-                    annotated_image,
-                    pose_landmarks_proto,
-                    solutions.pose.POSE_CONNECTIONS,
-                    solutions.drawing_styles.get_default_pose_landmarks_style()
-                )
+            # Helper function to extract landmark coordinates
+            def get_landmark_coords(idx: int) -> Dict:
+                lm = pose_landmarks[idx]
+                return {"x": lm.x, "y": lm.y, "z": lm.z}
 
-        return annotated_image, results.pose_landmarks
+            # Head width: landmarks 7 (left ear) and 8 (right ear)
+            landmark_pairs["head_width"] = {
+                "landmark_7": get_landmark_coords(7),
+                "landmark_8": get_landmark_coords(8)
+            }
+
+            # Shoulder width: landmarks 11 (left shoulder) and 12 (right shoulder)
+            landmark_pairs["shoulder_width"] = {
+                "landmark_11": get_landmark_coords(11),
+                "landmark_12": get_landmark_coords(12)
+            }
+
+            # Hip width: landmarks 23 (left hip) and 24 (right hip)
+            landmark_pairs["hip_width"] = {
+                "landmark_23": get_landmark_coords(23),
+                "landmark_24": get_landmark_coords(24)
+            }
+
+            # Upper arm length: 11 to 13 (left) and 12 to 14 (right)
+            landmark_pairs["upper_arm_length"] = {
+                "left": {
+                    "landmark_11": get_landmark_coords(11),  # Left shoulder
+                    "landmark_13": get_landmark_coords(13)   # Left elbow
+                },
+                "right": {
+                    "landmark_12": get_landmark_coords(12),  # Right shoulder
+                    "landmark_14": get_landmark_coords(14)   # Right elbow
+                }
+            }
+
+            # Forearm length: 13 to 15 (left) and 14 to 16 (right)
+            landmark_pairs["forearm_length"] = {
+                "left": {
+                    "landmark_13": get_landmark_coords(13),  # Left elbow
+                    "landmark_15": get_landmark_coords(15)   # Left wrist
+                },
+                "right": {
+                    "landmark_14": get_landmark_coords(14),  # Right elbow
+                    "landmark_16": get_landmark_coords(16)   # Right wrist
+                }
+            }
+
+        return landmark_pairs
 
     def close(self):
         """Release resources."""
         self.landmarker.close()
 
 
-def detect_pose(image_path: str, output_path: Optional[str] = None) -> np.ndarray:
+def detect_pose(image_path: str, output_path: Optional[str] = None) -> Dict:
     """
-    Convenience function to detect pose in an image file.
+    Convenience function to detect pose landmarks in an image file.
 
     Args:
         image_path: Path to input image file.
-        output_path: Optional path to save the annotated image.
+        output_path: Optional path to save the JSON output.
 
     Returns:
-        Annotated image as numpy array.
+        Dictionary containing landmark pairs for body measurements.
     """
     # Read the image
     image = cv2.imread(image_path)
@@ -146,32 +188,30 @@ def detect_pose(image_path: str, output_path: Optional[str] = None) -> np.ndarra
 
     # Create detector and process image
     detector = PoseDetector()
-    annotated_image, landmarks = detector.detect(image)
+    landmark_pairs = detector.detect(image)
     detector.close()
 
     # Save output if path provided
     if output_path:
-        cv2.imwrite(output_path, annotated_image)
-        print(f"Annotated image saved to {output_path}")
+        with open(output_path, 'w') as f:
+            json.dump(landmark_pairs, f, indent=2)
+        print(f"Landmark coordinates saved to {output_path}")
 
-    return annotated_image
+    return landmark_pairs
 
 
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Detect pose landmarks in an image")
+    parser = argparse.ArgumentParser(description="Detect pose landmarks in an image and extract measurement pairs")
     parser.add_argument("input_image", type=str, help="Path to input image")
-    parser.add_argument("-o", "--output", type=str, help="Path to save output image")
-    parser.add_argument("--show", action="store_true", help="Display the result")
+    parser.add_argument("-o", "--output", type=str, help="Path to save JSON output")
 
     args = parser.parse_args()
 
-    # Detect pose
-    result_image = detect_pose(args.input_image, args.output)
+    # Detect pose and extract landmark pairs
+    landmark_pairs = detect_pose(args.input_image, args.output)
 
-    # Display if requested
-    if args.show:
-        cv2.imshow("Pose Detection", result_image)
-        cv2.waitKey(0)
-        cv2.destroyAllWindows()
+    # Print the results
+    print("\nPose Landmark Pairs:")
+    print(json.dumps(landmark_pairs, indent=2))

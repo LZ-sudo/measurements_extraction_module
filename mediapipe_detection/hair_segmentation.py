@@ -3,12 +3,14 @@ Hair Segmentation Module using MediaPipe Image Segmenter
 
 This script performs hair segmentation on an image using MediaPipe's Image Segmenter
 with a custom hair segmentation model, combined with face detection to improve accuracy.
+Extracts normalized hair length coordinates for measurements.
 """
 
 import cv2
 import numpy as np
 import mediapipe as mp
-from typing import Tuple, Optional
+import json
+from typing import Dict, Optional, Tuple
 import os
 
 
@@ -116,28 +118,32 @@ class HairSegmenter:
             face_height = face_bottom - face_top
 
             # Estimate head region (expand to include hair)
-            # Hair typically extends above and around the face
-            head_top = max(0, face_top - int(face_height * 1.0))  # Expand up significantly
-            head_bottom = min(h, face_bottom + int(face_height * 0.3))  # Include chin
-            head_left = max(0, face_left - int(face_width * 0.4))  # Expand sides
-            head_right = min(w, face_right + int(face_width * 0.4))
+            # Hair can extend significantly, especially for long hair on female subjects
+            head_top = max(0, face_top - int(face_height * 1.2))  # Expand up more for hair volume
+            head_bottom = min(h, face_bottom + int(face_height * 2.5))  # Expand down for long hair
+            head_left = max(0, face_left - int(face_width * 0.6))  # Expand sides more
+            head_right = min(w, face_right + int(face_width * 0.6))
 
             return head_top, head_bottom, head_left, head_right
         else:
             # No face detected, use top portion of image
             return 0, int(h * 0.5), 0, w
 
-    def segment(self, image: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def segment(self, image: np.ndarray) -> Dict:
         """
-        Perform hair segmentation on an image.
+        Perform hair segmentation on an image and extract hair length measurements.
 
         Args:
             image: Input image as numpy array (BGR format from OpenCV).
 
         Returns:
-            Tuple of (annotated_image, mask)
-            - annotated_image: Original image with hair region highlighted
-            - mask: Binary mask where hair is white (255) and non-hair is black (0)
+            Dictionary containing normalized hair length coordinates:
+            {
+                "hair_length": {
+                    "top": {"y": ...},     # Normalized y-coordinate of topmost hair pixel
+                    "bottom": {"y": ...}   # Normalized y-coordinate of bottommost hair pixel
+                }
+            }
         """
         h, w = image.shape[:2]
         full_mask = np.zeros((h, w), dtype=np.uint8)
@@ -158,7 +164,7 @@ class HairSegmenter:
             mask_array = category_mask.numpy_view()
 
             # Create binary mask for head region
-            head_mask = (mask_array > 0.5).astype(np.uint8) * 255
+            head_mask = (mask_array > 0.5).astype(np.uint8)
 
             # Place head mask into full image mask
             full_mask[head_top:head_bottom, head_left:head_right] = head_mask
@@ -173,24 +179,26 @@ class HairSegmenter:
             mask_array = category_mask.numpy_view()
 
             # Create binary mask
-            full_mask = (mask_array > 0.5).astype(np.uint8) * 255
+            full_mask = (mask_array > 0.5).astype(np.uint8)
 
-        # Create annotated image with colored overlay
-        annotated_image = image.copy()
+        # Initialize result dictionary
+        hair_data = {}
 
-        # Create cyan overlay for hair regions
-        overlay = np.zeros_like(image)
-        overlay[full_mask > 0] = [255, 255, 0]  # Cyan in BGR
+        # Find hair pixels
+        hair_pixels = np.where(full_mask > 0)
 
-        # Blend overlay with original image
-        alpha = 0.5
-        annotated_image = cv2.addWeighted(annotated_image, 1, overlay, alpha, 0)
+        if len(hair_pixels[0]) > 0:
+            # Get topmost and bottommost y-coordinates
+            top_y = int(np.min(hair_pixels[0]))
+            bottom_y = int(np.max(hair_pixels[0]))
 
-        # Draw contours around hair regions
-        contours, _ = cv2.findContours(full_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        cv2.drawContours(annotated_image, contours, -1, (0, 255, 255), 2)
+            # Normalize coordinates (divide by image height)
+            hair_data["hair_length"] = {
+                "top": {"y": top_y / h},
+                "bottom": {"y": bottom_y / h}
+            }
 
-        return annotated_image, full_mask
+        return hair_data
 
     def close(self):
         """Release resources."""
@@ -202,22 +210,20 @@ class HairSegmenter:
 def segment_hair(
     image_path: str,
     output_path: Optional[str] = None,
-    mask_output_path: Optional[str] = None,
     model_path: Optional[str] = None,
     use_face_detection: bool = True
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> Dict:
     """
-    Convenience function to segment hair in an image file.
+    Convenience function to segment hair in an image file and extract hair length.
 
     Args:
         image_path: Path to input image file.
-        output_path: Optional path to save the annotated image.
-        mask_output_path: Optional path to save the segmentation mask.
+        output_path: Optional path to save the JSON output.
         model_path: Optional path to hair segmentation model.
         use_face_detection: Whether to use face detection (recommended for full-body images).
 
     Returns:
-        Tuple of (annotated_image, mask).
+        Dictionary containing normalized hair length coordinates.
     """
     # Read the image
     image = cv2.imread(image_path)
@@ -226,47 +232,38 @@ def segment_hair(
 
     # Create segmenter and process image
     segmenter = HairSegmenter(model_path=model_path, use_face_detection=use_face_detection)
-    annotated_image, mask = segmenter.segment(image)
+    hair_data = segmenter.segment(image)
     segmenter.close()
 
-    # Save outputs if paths provided
+    # Save output if path provided
     if output_path:
-        cv2.imwrite(output_path, annotated_image)
-        print(f"Annotated image saved to {output_path}")
+        with open(output_path, 'w') as f:
+            json.dump(hair_data, f, indent=2)
+        print(f"Hair length coordinates saved to {output_path}")
 
-    if mask_output_path:
-        cv2.imwrite(mask_output_path, mask)
-        print(f"Segmentation mask saved to {mask_output_path}")
-
-    return annotated_image, mask
+    return hair_data
 
 
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Perform hair segmentation on an image using MediaPipe")
+    parser = argparse.ArgumentParser(description="Perform hair segmentation on an image and extract hair length")
     parser.add_argument("input_image", type=str, help="Path to input image")
-    parser.add_argument("-o", "--output", type=str, help="Path to save output image")
-    parser.add_argument("-m", "--mask", type=str, help="Path to save segmentation mask")
+    parser.add_argument("-o", "--output", type=str, help="Path to save JSON output")
     parser.add_argument("--model", type=str, help="Path to hair segmentation model (.tflite)")
     parser.add_argument("--no-face-detection", action="store_true",
                        help="Disable face detection (use for close-up head shots)")
-    parser.add_argument("--show", action="store_true", help="Display the result")
 
     args = parser.parse_args()
 
-    # Segment hair
-    result_image, result_mask = segment_hair(
+    # Segment hair and extract length
+    hair_data = segment_hair(
         args.input_image,
         args.output,
-        args.mask,
         args.model,
         use_face_detection=not args.no_face_detection
     )
 
-    # Display if requested
-    if args.show:
-        cv2.imshow("Hair Segmentation", result_image)
-        cv2.imshow("Hair Mask", result_mask)
-        cv2.waitKey(0)
-        cv2.destroyAllWindows()
+    # Print the results
+    print("\nHair Length:")
+    print(json.dumps(hair_data, indent=2))
