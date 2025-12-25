@@ -1,0 +1,7 @@
+{
+  "expected_lines": 20,
+  "expected_numbers": 20,
+  "number_range": [10, 200],
+  "cm_interval": 10,
+  "description": "Full backdrop configuration with 20 bold 10cm demarcation lines and numbers 10-200 on both left and right sides"
+}
