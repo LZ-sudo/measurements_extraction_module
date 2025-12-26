@@ -20,7 +20,7 @@ class HandDetector:
     def __init__(
         self,
         model_path: Optional[str] = None,
-        num_hands: int = 1,
+        num_hands: int = 2,
         min_hand_detection_confidence: float = 0.5,
         min_hand_presence_confidence: float = 0.5,
         min_tracking_confidence: float = 0.5
