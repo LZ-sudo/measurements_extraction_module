@@ -200,6 +200,99 @@ class HairSegmenter:
 
         return hair_data
 
+    def visualize(self, image: np.ndarray) -> np.ndarray:
+        """
+        Visualize hair segmentation with overlay and length markers.
+
+        Args:
+            image: Input image as numpy array (BGR format).
+
+        Returns:
+            Image with hair segmentation overlay and length markers.
+        """
+        h, w = image.shape[:2]
+        full_mask = np.zeros((h, w), dtype=np.uint8)
+
+        # Get head region if using face detection
+        if self.use_face_detection and self.face_detector is not None:
+            head_top, head_bottom, head_left, head_right = self._get_head_region(image)
+
+            # Extract head region
+            head_region = image[head_top:head_bottom, head_left:head_right]
+
+            # Segment the head region
+            head_rgb = cv2.cvtColor(head_region, cv2.COLOR_BGR2RGB)
+            mp_head = mp.Image(image_format=mp.ImageFormat.SRGB, data=head_rgb)
+
+            segmentation_result = self.segmenter.segment(mp_head)
+            category_mask = segmentation_result.category_mask
+            mask_array = category_mask.numpy_view()
+
+            # Create binary mask for head region
+            head_mask = (mask_array > 0.5).astype(np.uint8)
+
+            # Place head mask into full image mask
+            full_mask[head_top:head_bottom, head_left:head_right] = head_mask
+
+            # Create visualization
+            annotated_image = image.copy()
+
+            # Draw head region bounding box (for debugging)
+            cv2.rectangle(annotated_image, (head_left, head_top), (head_right, head_bottom),
+                         (255, 255, 0), 2)
+            cv2.putText(annotated_image, "Head Region", (head_left, head_top - 10),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
+
+        else:
+            # No face detection, segment full image
+            image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image_rgb)
+
+            segmentation_result = self.segmenter.segment(mp_image)
+            category_mask = segmentation_result.category_mask
+            mask_array = category_mask.numpy_view()
+
+            # Create binary mask
+            full_mask = (mask_array > 0.5).astype(np.uint8)
+
+            # Create visualization
+            annotated_image = image.copy()
+
+        # Create colored overlay (semi-transparent red for hair)
+        overlay = np.zeros_like(image)
+        overlay[full_mask > 0] = [0, 0, 255]  # Red for hair
+        annotated_image = cv2.addWeighted(annotated_image, 0.7, overlay, 0.3, 0)
+
+        # Find and draw hair length markers
+        hair_pixels = np.where(full_mask > 0)
+        if len(hair_pixels[0]) > 0:
+            top_y = int(np.min(hair_pixels[0]))
+            bottom_y = int(np.max(hair_pixels[0]))
+
+            # Draw horizontal lines at top and bottom
+            cv2.line(annotated_image, (0, top_y), (w, top_y), (0, 255, 0), 2)
+            cv2.line(annotated_image, (0, bottom_y), (w, bottom_y), (0, 255, 0), 2)
+
+            # Add labels
+            cv2.putText(annotated_image, f"Top: y={top_y/h:.3f}", (10, top_y - 10),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            cv2.putText(annotated_image, f"Bottom: y={bottom_y/h:.3f}", (10, bottom_y + 25),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+            # Draw hair length span line on the side
+            mid_x = w - 50
+            cv2.line(annotated_image, (mid_x, top_y), (mid_x, bottom_y), (255, 0, 255), 3)
+            cv2.circle(annotated_image, (mid_x, top_y), 5, (255, 0, 255), -1)
+            cv2.circle(annotated_image, (mid_x, bottom_y), 5, (255, 0, 255), -1)
+
+            # Add hair length measurement
+            hair_length_normalized = (bottom_y - top_y) / h
+            cv2.putText(annotated_image, f"Hair Length: {hair_length_normalized:.3f}",
+                       (mid_x - 200, (top_y + bottom_y) // 2),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 255), 2)
+
+        return annotated_image
+
     def close(self):
         """Release resources."""
         self.segmenter.close()
@@ -211,7 +304,8 @@ def segment_hair(
     image_path: str,
     output_path: Optional[str] = None,
     model_path: Optional[str] = None,
-    use_face_detection: bool = True
+    use_face_detection: bool = True,
+    visualize_path: Optional[str] = None
 ) -> Dict:
     """
     Convenience function to segment hair in an image file and extract hair length.
@@ -221,6 +315,7 @@ def segment_hair(
         output_path: Optional path to save the JSON output.
         model_path: Optional path to hair segmentation model.
         use_face_detection: Whether to use face detection (recommended for full-body images).
+        visualize_path: Optional path to save visualization image.
 
     Returns:
         Dictionary containing normalized hair length coordinates.
@@ -233,6 +328,13 @@ def segment_hair(
     # Create segmenter and process image
     segmenter = HairSegmenter(model_path=model_path, use_face_detection=use_face_detection)
     hair_data = segmenter.segment(image)
+
+    # Generate visualization if requested
+    if visualize_path:
+        annotated_image = segmenter.visualize(image)
+        cv2.imwrite(visualize_path, annotated_image)
+        print(f"Visualization saved to {visualize_path}")
+
     segmenter.close()
 
     # Save output if path provided
@@ -250,6 +352,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Perform hair segmentation on an image and extract hair length")
     parser.add_argument("input_image", type=str, help="Path to input image")
     parser.add_argument("-o", "--output", type=str, help="Path to save JSON output")
+    parser.add_argument("-v", "--visualize", type=str, help="Path to save visualization image with segmentation overlay")
     parser.add_argument("--model", type=str, help="Path to hair segmentation model (.tflite)")
     parser.add_argument("--no-face-detection", action="store_true",
                        help="Disable face detection (use for close-up head shots)")
@@ -261,7 +364,8 @@ if __name__ == "__main__":
         args.input_image,
         args.output,
         args.model,
-        use_face_detection=not args.no_face_detection
+        use_face_detection=not args.no_face_detection,
+        visualize_path=args.visualize
     )
 
     # Print the results
