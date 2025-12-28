@@ -9,7 +9,8 @@ draws the landmarks and connections on the image, and returns the annotated imag
 import cv2
 import mediapipe as mp
 import numpy as np
-from typing import Tuple, Optional, List
+import json
+from typing import Dict, Optional, List, Tuple
 from mediapipe import solutions
 from mediapipe.framework.formats import landmark_pb2
 
@@ -82,17 +83,59 @@ class FaceDetector:
 
         return local_path
 
-    def detect(self, image: np.ndarray) -> Tuple[np.ndarray, Optional[List]]:
+    def detect(self, image: np.ndarray) -> Dict:
         """
-        Detect face mesh landmarks in an image and draw them.
+        Detect face mesh landmarks in an image and extract all landmarks as JSON.
 
         Args:
             image: Input image as numpy array (BGR format).
 
         Returns:
-            Tuple of (annotated_image, face_landmarks_list)
-            - annotated_image: Image with face landmarks drawn
-            - face_landmarks_list: List of detected face landmarks (or None if not detected)
+            Dictionary containing all face landmarks (478 per face):
+            {
+                "faces": [
+                    {
+                        "landmarks": [
+                            {"x": ..., "y": ..., "z": ...},
+                            ... (478 total landmarks)
+                        ]
+                    },
+                    ...
+                ]
+            }
+        """
+        # Convert BGR to RGB
+        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+        # Create MediaPipe Image
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image_rgb)
+
+        # Process the image
+        results = self.landmarker.detect(mp_image)
+
+        # Initialize result dictionary
+        face_data = {"faces": []}
+
+        # Extract all landmarks if detected
+        if results.face_landmarks:
+            for face_landmarks in results.face_landmarks:
+                landmarks_list = [
+                    {"x": lm.x, "y": lm.y, "z": lm.z}
+                    for lm in face_landmarks
+                ]
+                face_data["faces"].append({"landmarks": landmarks_list})
+
+        return face_data
+
+    def visualize(self, image: np.ndarray) -> np.ndarray:
+        """
+        Draw face mesh landmarks on the image for visualization.
+
+        Args:
+            image: Input image as numpy array (BGR format).
+
+        Returns:
+            Image with face landmarks drawn on it.
         """
         # Convert BGR to RGB
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
@@ -141,23 +184,30 @@ class FaceDetector:
                     connection_drawing_spec=solutions.drawing_styles.get_default_face_mesh_iris_connections_style()
                 )
 
-        return annotated_image, results.face_landmarks if results.face_landmarks else None
+        return annotated_image
 
     def close(self):
         """Release resources."""
         self.landmarker.close()
 
 
-def detect_face(image_path: str, output_path: Optional[str] = None) -> np.ndarray:
+def detect_face(
+    image_path: str,
+    output_path: Optional[str] = None,
+    num_faces: int = 1,
+    visualize_path: Optional[str] = None
+) -> Dict:
     """
     Convenience function to detect face mesh in an image file.
 
     Args:
         image_path: Path to input image file.
-        output_path: Optional path to save the annotated image.
+        output_path: Optional path to save the JSON output.
+        num_faces: Maximum number of faces to detect (default: 1).
+        visualize_path: Optional path to save visualization image.
 
     Returns:
-        Annotated image as numpy array.
+        Dictionary containing face landmarks.
     """
     # Read the image
     image = cv2.imread(image_path)
@@ -165,16 +215,24 @@ def detect_face(image_path: str, output_path: Optional[str] = None) -> np.ndarra
         raise ValueError(f"Could not read image from {image_path}")
 
     # Create detector and process image
-    detector = FaceDetector()
-    annotated_image, landmarks = detector.detect(image)
+    detector = FaceDetector(num_faces=num_faces)
+    face_data = detector.detect(image)
+
+    # Generate visualization if requested
+    if visualize_path:
+        annotated_image = detector.visualize(image)
+        cv2.imwrite(visualize_path, annotated_image)
+        print(f"Visualization saved to {visualize_path}")
+
     detector.close()
 
-    # Save output if path provided
+    # Save JSON output if path provided
     if output_path:
-        cv2.imwrite(output_path, annotated_image)
-        print(f"Annotated image saved to {output_path}")
+        with open(output_path, 'w') as f:
+            json.dump(face_data, f, indent=2)
+        print(f"Face landmark coordinates saved to {output_path}")
 
-    return annotated_image
+    return face_data
 
 
 if __name__ == "__main__":
@@ -182,17 +240,17 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Detect face mesh landmarks in an image")
     parser.add_argument("input_image", type=str, help="Path to input image")
-    parser.add_argument("-o", "--output", type=str, help="Path to save output image")
-    parser.add_argument("--show", action="store_true", help="Display the result")
+    parser.add_argument("-o", "--output", type=str, help="Path to save JSON output")
+    parser.add_argument("-v", "--visualize", type=str, help="Path to save visualization image with landmarks")
     parser.add_argument("--max-faces", type=int, default=1, help="Maximum number of faces to detect")
 
     args = parser.parse_args()
 
     # Detect face mesh
-    result_image = detect_face(args.input_image, args.output)
+    face_data = detect_face(args.input_image, args.output, args.max_faces, args.visualize)
 
-    # Display if requested
-    if args.show:
-        cv2.imshow("Face Mesh Detection", result_image)
-        cv2.waitKey(0)
-        cv2.destroyAllWindows()
+    # Print the results
+    print(f"\nDetected {len(face_data.get('faces', []))} face(s)")
+    if face_data.get('faces'):
+        for idx, face in enumerate(face_data['faces']):
+            print(f"Face {idx + 1}: {len(face['landmarks'])} landmarks")

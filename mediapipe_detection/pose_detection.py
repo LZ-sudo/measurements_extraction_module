@@ -77,6 +77,58 @@ class PoseDetector:
 
         return local_path
 
+    def visualize(self, image: np.ndarray) -> np.ndarray:
+        """
+        Draw pose landmarks on the image for visualization.
+
+        Args:
+            image: Input image as numpy array (BGR format).
+
+        Returns:
+            Image with landmarks drawn on it.
+        """
+        # Convert BGR to RGB
+        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image_rgb)
+
+        # Detect to get full results
+        results = self.landmarker.detect(mp_image)
+
+        # Create a copy for drawing
+        annotated_image = image.copy()
+
+        if results.pose_landmarks:
+            pose_landmarks = results.pose_landmarks[0]
+            h, w = image.shape[:2]
+
+            # Get pose connections
+            mp_pose = mp.solutions.pose
+
+            # Draw all pose landmarks and connections
+            for idx, lm in enumerate(pose_landmarks):
+                cx, cy = int(lm.x * w), int(lm.y * h)
+                cv2.circle(annotated_image, (cx, cy), 3, (245, 117, 66), -1)
+
+            # Draw connections between landmarks
+            for connection in mp_pose.POSE_CONNECTIONS:
+                start_idx, end_idx = connection
+                start_lm = pose_landmarks[start_idx]
+                end_lm = pose_landmarks[end_idx]
+                start_point = (int(start_lm.x * w), int(start_lm.y * h))
+                end_point = (int(end_lm.x * w), int(end_lm.y * h))
+                cv2.line(annotated_image, start_point, end_point, (245, 66, 230), 2)
+
+            # Highlight and label specific measurement landmarks
+            measurement_landmarks = [7, 8, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28]
+            for idx in measurement_landmarks:
+                lm = pose_landmarks[idx]
+                cx, cy = int(lm.x * w), int(lm.y * h)
+                cv2.circle(annotated_image, (cx, cy), 6, (0, 255, 0), -1)
+                cv2.putText(annotated_image, str(idx), (cx + 10, cy - 10),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+
+        return annotated_image
+
     def detect(self, image: np.ndarray) -> Dict:
         """
         Detect pose landmarks in an image and extract measurement landmark pairs.
@@ -97,6 +149,14 @@ class PoseDetector:
                 "forearm_length": {
                     "left": {"landmark_13": {...}, "landmark_15": {...}},
                     "right": {"landmark_14": {...}, "landmark_16": {...}}
+                },
+                "upper_leg_length": {
+                    "left": {"landmark_23": {...}, "landmark_25": {...}},
+                    "right": {"landmark_24": {...}, "landmark_26": {...}}
+                },
+                "lower_leg_length": {
+                    "left": {"landmark_25": {...}, "landmark_27": {...}},
+                    "right": {"landmark_26": {...}, "landmark_28": {...}}
                 }
             }
         """
@@ -163,6 +223,30 @@ class PoseDetector:
                 }
             }
 
+            # Upper leg length: 23 to 25 (left) and 24 to 26 (right)
+            landmark_pairs["upper_leg_length"] = {
+                "left": {
+                    "landmark_23": get_landmark_coords(23),  # Left hip
+                    "landmark_25": get_landmark_coords(25)   # Left knee
+                },
+                "right": {
+                    "landmark_24": get_landmark_coords(24),  # Right hip
+                    "landmark_26": get_landmark_coords(26)   # Right knee
+                }
+            }
+
+            # Lower leg length: 25 to 27 (left) and 26 to 28 (right)
+            landmark_pairs["lower_leg_length"] = {
+                "left": {
+                    "landmark_25": get_landmark_coords(25),  # Left knee
+                    "landmark_27": get_landmark_coords(27)   # Left ankle
+                },
+                "right": {
+                    "landmark_26": get_landmark_coords(26),  # Right knee
+                    "landmark_28": get_landmark_coords(28)   # Right ankle
+                }
+            }
+
         return landmark_pairs
 
     def close(self):
@@ -170,13 +254,18 @@ class PoseDetector:
         self.landmarker.close()
 
 
-def detect_pose(image_path: str, output_path: Optional[str] = None) -> Dict:
+def detect_pose(
+    image_path: str,
+    output_path: Optional[str] = None,
+    visualize_path: Optional[str] = None
+) -> Dict:
     """
     Convenience function to detect pose landmarks in an image file.
 
     Args:
         image_path: Path to input image file.
         output_path: Optional path to save the JSON output.
+        visualize_path: Optional path to save visualization image.
 
     Returns:
         Dictionary containing landmark pairs for body measurements.
@@ -189,6 +278,13 @@ def detect_pose(image_path: str, output_path: Optional[str] = None) -> Dict:
     # Create detector and process image
     detector = PoseDetector()
     landmark_pairs = detector.detect(image)
+
+    # Generate visualization if requested
+    if visualize_path:
+        annotated_image = detector.visualize(image)
+        cv2.imwrite(visualize_path, annotated_image)
+        print(f"Visualization saved to {visualize_path}")
+
     detector.close()
 
     # Save output if path provided
@@ -206,11 +302,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Detect pose landmarks in an image and extract measurement pairs")
     parser.add_argument("input_image", type=str, help="Path to input image")
     parser.add_argument("-o", "--output", type=str, help="Path to save JSON output")
+    parser.add_argument("-v", "--visualize", type=str, help="Path to save visualization image with landmarks")
 
     args = parser.parse_args()
 
     # Detect pose and extract landmark pairs
-    landmark_pairs = detect_pose(args.input_image, args.output)
+    landmark_pairs = detect_pose(args.input_image, args.output, args.visualize)
 
     # Print the results
     print("\nPose Landmark Pairs:")

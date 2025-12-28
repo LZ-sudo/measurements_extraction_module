@@ -80,6 +80,65 @@ class HandDetector:
 
         return local_path
 
+    def visualize(self, image: np.ndarray) -> np.ndarray:
+        """
+        Draw hand landmarks on the image for visualization.
+
+        Args:
+            image: Input image as numpy array (BGR format).
+
+        Returns:
+            Image with hand landmarks drawn on it.
+        """
+        # Convert BGR to RGB
+        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image_rgb)
+
+        # Detect to get full results
+        results = self.landmarker.detect(mp_image)
+
+        # Create a copy for drawing
+        annotated_image = image.copy()
+
+        if results.hand_landmarks:
+            h, w = image.shape[:2]
+            mp_hands = mp.solutions.hands
+
+            for hand_idx, hand_landmarks in enumerate(results.hand_landmarks):
+                # Draw all hand landmarks
+                for idx, lm in enumerate(hand_landmarks):
+                    cx, cy = int(lm.x * w), int(lm.y * h)
+                    cv2.circle(annotated_image, (cx, cy), 3, (245, 117, 66), -1)
+
+                # Draw connections between landmarks
+                for connection in mp_hands.HAND_CONNECTIONS:
+                    start_idx, end_idx = connection
+                    start_lm = hand_landmarks[start_idx]
+                    end_lm = hand_landmarks[end_idx]
+                    start_point = (int(start_lm.x * w), int(start_lm.y * h))
+                    end_point = (int(end_lm.x * w), int(end_lm.y * h))
+                    cv2.line(annotated_image, start_point, end_point, (245, 66, 230), 2)
+
+                # Highlight measurement landmarks (0 and 12)
+                measurement_landmarks = [0, 12]
+                for idx in measurement_landmarks:
+                    lm = hand_landmarks[idx]
+                    cx, cy = int(lm.x * w), int(lm.y * h)
+                    cv2.circle(annotated_image, (cx, cy), 6, (0, 255, 0), -1)
+                    cv2.putText(annotated_image, str(idx), (cx + 10, cy - 10),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+
+                # Add handedness label
+                if results.handedness:
+                    handedness = results.handedness[hand_idx][0].category_name
+                    # Get wrist position for label
+                    wrist = hand_landmarks[0]
+                    label_x, label_y = int(wrist.x * w), int(wrist.y * h) - 20
+                    cv2.putText(annotated_image, handedness, (label_x, label_y),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+
+        return annotated_image
+
     def detect(self, image: np.ndarray) -> Dict:
         """
         Detect hand landmarks in an image and extract measurement landmark pairs.
@@ -146,7 +205,12 @@ class HandDetector:
         self.landmarker.close()
 
 
-def detect_hands(image_path: str, output_path: Optional[str] = None, num_hands: int = 2) -> Dict:
+def detect_hands(
+    image_path: str,
+    output_path: Optional[str] = None,
+    num_hands: int = 2,
+    visualize_path: Optional[str] = None
+) -> Dict:
     """
     Convenience function to detect hand landmarks in an image file.
 
@@ -154,6 +218,7 @@ def detect_hands(image_path: str, output_path: Optional[str] = None, num_hands: 
         image_path: Path to input image file.
         output_path: Optional path to save the JSON output.
         num_hands: Maximum number of hands to detect (default: 2).
+        visualize_path: Optional path to save visualization image.
 
     Returns:
         Dictionary containing landmark pairs for hand measurements.
@@ -166,6 +231,13 @@ def detect_hands(image_path: str, output_path: Optional[str] = None, num_hands: 
     # Create detector and process image
     detector = HandDetector(num_hands=num_hands)
     hand_data = detector.detect(image)
+
+    # Generate visualization if requested
+    if visualize_path:
+        annotated_image = detector.visualize(image)
+        cv2.imwrite(visualize_path, annotated_image)
+        print(f"Visualization saved to {visualize_path}")
+
     detector.close()
 
     # Save output if path provided
@@ -183,12 +255,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Detect hand landmarks in an image and extract measurement pairs")
     parser.add_argument("input_image", type=str, help="Path to input image")
     parser.add_argument("-o", "--output", type=str, help="Path to save JSON output")
+    parser.add_argument("-v", "--visualize", type=str, help="Path to save visualization image with landmarks")
     parser.add_argument("--max-hands", type=int, default=2, help="Maximum number of hands to detect")
 
     args = parser.parse_args()
 
     # Detect hands and extract landmark pairs
-    hand_data = detect_hands(args.input_image, args.output, num_hands=args.max_hands)
+    hand_data = detect_hands(args.input_image, args.output, args.max_hands, args.visualize)
 
     # Print the results
     print("\nHand Landmark Pairs:")
