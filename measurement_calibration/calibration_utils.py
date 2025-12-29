@@ -103,9 +103,10 @@ def detect_lines_with_params(
     else:
         scaled_image = image
 
-    # Edge detection
+    # Edge detection with bilateral filtering to reduce noise while preserving edges
     gray = cv2.cvtColor(scaled_image, cv2.COLOR_BGR2GRAY)
-    edges = cv2.Canny(gray, canny_low, canny_high, apertureSize=3)
+    filtered = cv2.bilateralFilter(gray, 9, 75, 75)
+    edges = cv2.Canny(filtered, canny_low, canny_high, apertureSize=3)
 
     # Line detection using Hough Transform
     lines = cv2.HoughLinesP(
@@ -120,23 +121,26 @@ def detect_lines_with_params(
     if lines is None:
         return [], []
 
-    # Extract y-coordinates of horizontal lines
+    # Extract y-coordinates of horizontal lines with length validation
     y_coords = []
     for line in lines:
         x1, y1, x2, y2 = line[0]
         angle = abs(np.arctan2(y2 - y1, x2 - x1) * 180 / np.pi)
         if angle < 3 or angle > 177:  # Horizontal lines only
-            y_coords.append(int((y1 + y2) / 2))
+            # Double-check line length (longer lines are more reliable)
+            line_length = np.sqrt((x2 - x1)**2 + (y2 - y1)**2)
+            if line_length > scaled_image.shape[1] * min_line_length_ratio:
+                y_coords.append(int((y1 + y2) / 2))
 
     # Scale back to original coordinates if image was upscaled
     if line_scale_factor > 1.0:
         y_coords = [int(y / line_scale_factor) for y in y_coords]
 
-    # Remove duplicates within 5 pixels
+    # Remove duplicates within 10 pixels (increased from 5 to avoid detecting thin/thick line pairs)
     y_coords = sorted(set(y_coords))
     filtered_coords = []
     for i, y in enumerate(y_coords):
-        if i == 0 or y - filtered_coords[-1] > 5:
+        if i == 0 or y - filtered_coords[-1] > 10:
             filtered_coords.append(y)
 
     # Measure line thickness for validation (on original image)
@@ -199,10 +203,11 @@ def detect_numbers(
     scale_factor: float = 1.0,
     region_width: float = 0.15,
     psm_mode: int = 11,
-    number_range: Tuple[int, int] = (10, 200)
+    number_range: Tuple[int, int] = (10, 200),
+    use_preprocessing: str = 'otsu'
 ) -> List[Tuple[int, int]]:
     """
-    Detect measurement numbers using OCR.
+    Detect measurement numbers using OCR with advanced preprocessing.
 
     Args:
         image: Input image as numpy array (BGR format)
@@ -210,6 +215,7 @@ def detect_numbers(
         region_width: Width of left region to scan (0.15-0.30)
         psm_mode: Tesseract PSM mode (6, 11, or 12)
         number_range: Valid number range as (min, max) tuple
+        use_preprocessing: Preprocessing method ('otsu', 'adaptive', 'morph', 'clahe')
 
     Returns:
         List of (number, y_position) tuples
@@ -226,9 +232,28 @@ def detect_numbers(
             interpolation=cv2.INTER_CUBIC
         )
 
-    # Otsu thresholding
+    # Convert to grayscale
     gray = cv2.cvtColor(left_region, cv2.COLOR_BGR2GRAY)
-    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    # Apply preprocessing based on method
+    if use_preprocessing == 'adaptive':
+        # Adaptive thresholding - best for uneven lighting
+        binary = cv2.adaptiveThreshold(
+            gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY, 21, 10
+        )
+    elif use_preprocessing == 'morph':
+        # Morphological operations + Otsu
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        morphed = cv2.morphologyEx(gray, cv2.MORPH_CLOSE, kernel)
+        _, binary = cv2.threshold(morphed, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    elif use_preprocessing == 'clahe':
+        # CLAHE (Contrast Limited Adaptive Histogram Equalization)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        enhanced = clahe.apply(gray)
+        _, binary = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    else:  # otsu (default)
+        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
     # Invert if background is dark
     if np.mean(binary) < 127:
@@ -267,6 +292,86 @@ def detect_numbers(
 
     numbers_with_pos.sort(key=lambda x: x[1])
     return numbers_with_pos
+
+
+def detect_numbers_with_config(
+    image: np.ndarray,
+    scale_factor: float,
+    preprocess_method: str,
+    psm_mode: int,
+    number_range: Tuple[int, int] = (10, 200)
+) -> List[Tuple[int, int, int]]:
+    """
+    Detect numbers with a specific OCR configuration.
+
+    This utility function allows testing different OCR settings to find
+    the optimal configuration for a given image.
+
+    Args:
+        image: Input image (BGR format)
+        scale_factor: Upscaling factor (e.g., 2.0, 2.5, 3.0, 4.0)
+        preprocess_method: Preprocessing method ('clahe', 'adaptive', 'otsu', 'morph')
+        psm_mode: Tesseract PSM mode (6, 7, 11, 12)
+        number_range: Valid number range as (min, max) tuple
+
+    Returns:
+        List of (number, x_position, y_position) tuples
+    """
+    h, w = image.shape[:2]
+    min_num, max_num = number_range
+
+    # Upscale image
+    scaled = cv2.resize(
+        image,
+        (int(w * scale_factor), int(h * scale_factor)),
+        interpolation=cv2.INTER_CUBIC
+    )
+    gray = cv2.cvtColor(scaled, cv2.COLOR_BGR2GRAY)
+
+    # Apply preprocessing
+    if preprocess_method == 'clahe':
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        enhanced = clahe.apply(gray)
+        _, binary = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    elif preprocess_method == 'adaptive':
+        binary = cv2.adaptiveThreshold(
+            gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY, 21, 10
+        )
+    elif preprocess_method == 'otsu':
+        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    else:  # morph
+        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+        binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+
+    # Invert if needed
+    if np.mean(binary) < 127:
+        binary = cv2.bitwise_not(binary)
+
+    # Run OCR
+    custom_config = f'--psm {psm_mode} --oem 3 -c tessedit_char_whitelist=0123456789'
+
+    try:
+        data = pytesseract.image_to_data(binary, config=custom_config, output_type=pytesseract.Output.DICT)
+
+        numbers_with_positions = []
+        for i in range(len(data['text'])):
+            text = data['text'][i].strip()
+            conf = float(data['conf'][i])
+
+            if conf >= 0 and text.isdigit():
+                number = int(text)
+
+                if min_num <= number <= max_num:
+                    # Get center position (scale back to original)
+                    x = (data['left'][i] + data['width'][i] // 2) / scale_factor
+                    y = (data['top'][i] + data['height'][i] // 2) / scale_factor
+                    numbers_with_positions.append((number, int(x), int(y)))
+
+        return numbers_with_positions
+    except Exception:
+        return []
 
 
 # ============================================================================
