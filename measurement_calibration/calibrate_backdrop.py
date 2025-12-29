@@ -1,24 +1,27 @@
 """
-Perspective-Aware Backdrop Calibration
+Corner-Based Backdrop Calibration
 
-This script uses a robust two-stage approach optimized for fixed-design backdrops:
+This script uses a corner-detection approach optimized for fixed-design backdrops:
 
-1. BACKDROP DETECTION & PERSPECTIVE CORRECTION
-   - Detects the backdrop boundary using contour detection
-   - Applies perspective transform to get straight-on view
-   - Eliminates background clutter and corrects camera angle
+1. CORNER NUMBER DETECTION
+   - Adaptively searches for four corner numbers (200, 200, 10, 10)
+   - Tries multiple OCR configurations (scale, preprocessing, PSM modes)
+   - Defines backdrop boundary based on detected corner positions
 
-2. FIXED-PARAMETER DETECTION
-   - Morphological line detection on corrected image
-   - Simple OCR with adaptive parameters
-   - No optimization needed - works across all scales/distances
+2. ROI-BASED DETECTION ON ORIGINAL IMAGE
+   - Extracts region of interest from ORIGINAL image (no warping)
+   - Detects lines and numbers within ROI
+   - Converts ROI coordinates back to original image coordinates
 
-This approach is inspired by document scanning technology and is much more
-robust than parameter optimization for handling:
-- Angled/perspective views
-- Background clutter (tiles, furniture, etc.)
-- Varying distances (close-up vs. distant)
-- Different lighting conditions
+3. CALIBRATION RELATIVE TO FULL IMAGE
+   - Calculates cm_per_normalized_unit using ORIGINAL image height
+   - Ensures calibration is consistent across all images regardless of backdrop size
+
+This approach handles:
+- Background clutter (only processes detected backdrop region)
+- Varying distances (adaptive OCR finds corners at any scale)
+- Different lighting conditions (multiple preprocessing methods)
+- Angled views (corner detection works from any angle)
 """
 
 import cv2
@@ -35,12 +38,13 @@ from calibration_utils import detect_numbers_with_config
 
 class PerspectiveBackdropCalibrator:
     """
-    Calibrator using perspective correction + fixed-parameter detection.
+    Calibrator using corner-based backdrop detection.
 
     This approach eliminates the need for parameter optimization by:
-    1. Detecting and extracting the backdrop region
-    2. Correcting perspective distortion
-    3. Using simple, robust detection on the corrected image
+    1. Detecting backdrop corners using adaptive OCR (searches for corner numbers)
+    2. Extracting ROI from original image (no warping/perspective correction)
+    3. Detecting lines and numbers within ROI
+    4. Calculating calibration relative to full original image dimensions
     """
 
     def __init__(
@@ -578,7 +582,7 @@ class PerspectiveBackdropCalibrator:
             print(f"Original image: {w_original}x{h_original}")
             print()
 
-        # Stage 1: Detect backdrop region
+        # Stage 1: Detect backdrop region (defines ROI in original image)
         if self.debug:
             print("Stage 1: Detecting backdrop boundary...")
 
@@ -588,47 +592,50 @@ class PerspectiveBackdropCalibrator:
             # Fallback: use entire image
             if self.debug:
                 print("  WARNING: Backdrop boundary not found, using entire image")
-            corners = np.array([
-                [0, 0],
-                [w_original-1, 0],
-                [w_original-1, h_original-1],
-                [0, h_original-1]
-            ], dtype=np.float32)
-            warped = image
+            roi = image
+            roi_bounds = (0, 0, w_original, h_original)  # (x, y, w, h)
         else:
             if self.debug:
                 print(f"  [OK] Found backdrop quadrilateral")
 
-            # Stage 2: Apply perspective correction
+            # Extract ROI from original image (no warping!)
+            # Get bounding box of the detected corners
+            x_coords = corners[:, 0]
+            y_coords = corners[:, 1]
+            x_min, x_max = int(np.min(x_coords)), int(np.max(x_coords))
+            y_min, y_max = int(np.min(y_coords)), int(np.max(y_coords))
+
+            roi = image[y_min:y_max, x_min:x_max]
+            roi_bounds = (x_min, y_min, x_max - x_min, y_max - y_min)
+
             if self.debug:
-                print("Stage 2: Applying perspective correction...")
+                print(f"  [OK] ROI extracted: {roi.shape[1]}x{roi.shape[0]} at ({x_min}, {y_min})")
 
-            warped = self.apply_perspective_transform(image, corners)
-
-            if self.debug:
-                print(f"  [OK] Corrected to {warped.shape[1]}x{warped.shape[0]}")
-
-        # Stage 3: Detect numbers on corrected image (do this FIRST)
+        # Stage 2: Detect numbers within ROI (do this FIRST)
         if self.debug:
-            print("Stage 3: Detecting numbers with OCR...")
+            print("Stage 2: Detecting numbers with OCR in ROI...")
 
-        numbers = self.detect_numbers_ocr(warped)
+        numbers_roi = self.detect_numbers_ocr(roi)
+
+        # Convert ROI coordinates back to original image coordinates
+        numbers = [(num, y_pos + roi_bounds[1]) for num, y_pos in numbers_roi]
 
         if self.debug:
             print(f"  [OK] Detected {len(numbers)} numbers")
 
-        # Stage 4: Detect lines on corrected image
-        # First try direct line detection
+        # Stage 3: Detect lines within ROI
         if self.debug:
-            print("Stage 4: Detecting horizontal lines...")
+            print("Stage 3: Detecting horizontal lines in ROI...")
 
-        lines = self.detect_lines_morphological(warped)
+        lines_roi = self.detect_lines_morphological(roi)
+
+        # Convert ROI coordinates back to original image coordinates
+        lines = [y_pos + roi_bounds[1] for y_pos in lines_roi]
 
         if self.debug:
             print(f"  [OK] Detected {len(lines)} lines via Hough Transform")
 
         # If line detection failed but we have good OCR, use number positions as line positions
-        # This is actually more reliable since numbers are always next to their lines!
         if len(lines) < self.expected_lines * 0.5 and len(numbers) >= self.expected_lines * 0.7:
             if self.debug:
                 print(f"  Using number y-positions as line positions (more reliable)")
@@ -665,52 +672,45 @@ class PerspectiveBackdropCalibrator:
 
         # Save visualization if requested
         if self.visualization_dir:
-            self._save_visualization(image, warped, corners, lines, numbers, calibration_data)
+            self._save_visualization(image, corners, lines, numbers, calibration_data)
 
         return {
             "calibration_data": calibration_data,
-            "method": "perspective_aware",
+            "method": "corner_detection",
             "backdrop_corners": corners.tolist() if corners is not None else None,
-            "corrected_image_size": (warped.shape[1], warped.shape[0])
+            "roi_bounds": roi_bounds
         }
 
     def _save_visualization(
         self,
         original: np.ndarray,
-        warped: np.ndarray,
         corners: Optional[np.ndarray],
         lines: List[int],
         numbers: List[Tuple[int, int]],
         calibration_data: Dict
     ):
-        """Save visualization images."""
-        # Visualization 1: Original image with detected backdrop boundary
-        vis_original = original.copy()
+        """Save visualization image showing detections on original image."""
+        # Single visualization: Original image with backdrop boundary, detected lines and numbers
+        vis = original.copy()
+        h, w = vis.shape[:2]
+
+        # Draw backdrop boundary if detected
         if corners is not None:
             pts = corners.astype(np.int32).reshape((-1, 1, 2))
-            cv2.polylines(vis_original, [pts], True, (0, 255, 0), 3)
+            cv2.polylines(vis, [pts], True, (0, 255, 0), 3)
             for i, corner in enumerate(corners):
-                cv2.circle(vis_original, tuple(corner.astype(int)), 8, (255, 0, 0), -1)
+                cv2.circle(vis, tuple(corner.astype(int)), 8, (255, 0, 0), -1)
 
-        cv2.imwrite(
-            str(Path(self.visualization_dir) / "1_backdrop_detection.jpg"),
-            vis_original
-        )
-
-        # Visualization 2: Corrected image with detected lines and numbers
-        vis_warped = warped.copy()
-        h, w = vis_warped.shape[:2]
-
-        # Draw lines
+        # Draw detected lines (in original image coordinates)
         for y in lines:
-            cv2.line(vis_warped, (0, y), (w, y), (0, 255, 0), 2)
+            cv2.line(vis, (0, y), (w, y), (0, 255, 255), 2)
 
-        # Draw numbers
+        # Draw detected numbers (in original image coordinates)
         for num, y in numbers:
-            cv2.circle(vis_warped, (int(w * 0.15), y), 6, (255, 0, 0), -1)
+            cv2.circle(vis, (int(w * 0.15), y), 6, (255, 0, 255), -1)
             cv2.putText(
-                vis_warped, str(num), (int(w * 0.18), y),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2
+                vis, str(num), (int(w * 0.18), y),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2
             )
 
         # Add info text
@@ -720,19 +720,22 @@ class PerspectiveBackdropCalibrator:
             f"Confidence: {calibration_data['confidence']}"
         ]
 
+        if calibration_data.get('cm_per_normalized_unit'):
+            info_text.append(f"Cal: {calibration_data['cm_per_normalized_unit']:.2f} cm/norm")
+
         for i, text in enumerate(info_text):
             cv2.putText(
-                vis_warped, text, (10, 40 + i*35),
+                vis, text, (10, 40 + i*35),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2
             )
 
         cv2.imwrite(
-            str(Path(self.visualization_dir) / "2_corrected_detections.jpg"),
-            vis_warped
+            str(Path(self.visualization_dir) / "1_backdrop_detection.jpg"),
+            vis
         )
 
         if self.debug:
-            print(f"\nVisualizations saved to {self.visualization_dir}/")
+            print(f"\nVisualization saved to {self.visualization_dir}/1_backdrop_detection.jpg")
 
 
 def calibrate_backdrop(
