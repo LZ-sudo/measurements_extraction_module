@@ -66,6 +66,7 @@ class PerspectiveBackdropCalibrator:
         self.expected_lines = target_config['expected_lines']
         self.expected_numbers = target_config['expected_numbers']
         self.number_range = tuple(target_config['number_range'])
+        self.cm_interval = target_config.get('cm_interval', 10)
 
         pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
         self.debug = debug
@@ -166,7 +167,7 @@ class PerspectiveBackdropCalibrator:
                 for psm_mode in psm_modes:
                     # Detect numbers with this configuration using shared utility
                     numbers_with_positions = detect_numbers_with_config(
-                        image, scale_factor, preprocess_method, psm_mode, self.number_range
+                        image, scale_factor, preprocess_method, psm_mode, self.number_range, self.cm_interval
                     )
 
                     # Try to identify the four corner numbers
@@ -311,69 +312,88 @@ class PerspectiveBackdropCalibrator:
     def detect_lines_morphological(
         self,
         image: np.ndarray,
-        min_thickness: float = 2.0
+        min_thickness: float = 3.0
     ) -> List[int]:
         """
         Detect bold horizontal lines using Hough Transform on corrected image.
 
         On a perspective-corrected image, we can use simpler, more reliable detection.
+        This method specifically targets bold lines by using thickness validation.
 
         Args:
             image: Perspective-corrected backdrop image
-            min_thickness: Minimum line thickness in pixels
+            min_thickness: Minimum line thickness in pixels (default 3.0 for bold lines)
 
         Returns:
-            List of y-coordinates for detected lines
+            List of y-coordinates for detected bold lines
         """
         h, w = image.shape[:2]
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-        # Bilateral filter for noise reduction
-        filtered = cv2.bilateralFilter(gray, 9, 75, 75)
+        # Try multiple edge detection thresholds to find bold lines
+        detected_lines = []
 
-        # Edge detection
-        edges = cv2.Canny(filtered, 30, 100)
+        # Multiple Canny thresholds to detect lines at different intensities
+        canny_configs = [
+            (30, 100),   # Original - good for clear lines
+            (50, 150),   # Higher threshold - better for bold lines
+            (40, 120),   # Medium threshold
+        ]
 
-        # Use Hough Transform to detect long horizontal lines
-        # More lenient parameters since we're on a corrected image
-        lines = cv2.HoughLinesP(
-            edges,
-            rho=1,
-            theta=np.pi/180,
-            threshold=int(w * 0.2),  # Line must be detected across 20% of width
-            minLineLength=int(w * 0.4),  # Minimum 40% of width
-            maxLineGap=40
-        )
+        for canny_low, canny_high in canny_configs:
+            # Bilateral filter for noise reduction
+            filtered = cv2.bilateralFilter(gray, 9, 75, 75)
 
-        if lines is None:
-            return []
+            # Edge detection
+            edges = cv2.Canny(filtered, canny_low, canny_high)
 
-        # Extract y-coordinates of horizontal lines
-        y_coords = []
-        for line in lines:
-            x1, y1, x2, y2 = line[0]
-            # Check if line is horizontal (angle < 3 degrees)
-            angle = abs(np.arctan2(y2 - y1, x2 - x1) * 180 / np.pi)
-            if angle < 3 or angle > 177:
-                # Validate line length
-                line_length = np.sqrt((x2 - x1)**2 + (y2 - y1)**2)
-                if line_length >= w * 0.5:
-                    y_center = int((y1 + y2) / 2)
-                    y_coords.append(y_center)
+            # Use Hough Transform to detect long horizontal lines
+            lines = cv2.HoughLinesP(
+                edges,
+                rho=1,
+                theta=np.pi/180,
+                threshold=int(w * 0.15),  # More lenient threshold
+                minLineLength=int(w * 0.35),  # More lenient minimum length
+                maxLineGap=50  # Allow larger gaps for bold lines
+            )
 
-        # Sort and remove duplicates within 20 pixels
-        y_coords = sorted(set(y_coords))
+            if lines is not None:
+                # Extract y-coordinates of horizontal lines
+                for line in lines:
+                    x1, y1, x2, y2 = line[0]
+                    # Check if line is horizontal (angle < 3 degrees)
+                    angle = abs(np.arctan2(y2 - y1, x2 - x1) * 180 / np.pi)
+                    if angle < 3 or angle > 177:
+                        # Validate line length
+                        line_length = np.sqrt((x2 - x1)**2 + (y2 - y1)**2)
+                        if line_length >= w * 0.4:
+                            y_center = int((y1 + y2) / 2)
+                            detected_lines.append(y_center)
+
+        # Sort and remove duplicates within 15 pixels
+        y_coords = sorted(set(detected_lines))
         filtered_coords = []
         for y in y_coords:
-            if not filtered_coords or y - filtered_coords[-1] > 20:
+            if not filtered_coords or y - filtered_coords[-1] > 15:
                 filtered_coords.append(y)
 
-        # Validate line thickness (measure actual thickness on original image)
+        # Validate line thickness - CRITICAL for detecting only bold lines
         validated_coords = []
+        thicknesses = []
         for y in filtered_coords:
             thickness = self._measure_line_thickness(gray, y)
             if thickness >= min_thickness:
                 validated_coords.append(y)
+                thicknesses.append(thickness)
+
+        # Additional filtering: if we have many lines, keep only the thickest ones
+        if len(validated_coords) > self.expected_lines * 1.2:
+            # Sort by thickness descending and keep top expected_lines
+            coords_with_thickness = list(zip(validated_coords, thicknesses))
+            coords_with_thickness.sort(key=lambda x: x[1], reverse=True)
+            # Keep the thickest lines up to expected count
+            validated_coords = [y for y, _ in coords_with_thickness[:self.expected_lines]]
+            validated_coords.sort()  # Sort by position
 
         return validated_coords
 

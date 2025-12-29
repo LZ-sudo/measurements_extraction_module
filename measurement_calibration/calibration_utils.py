@@ -204,7 +204,8 @@ def detect_numbers(
     region_width: float = 0.15,
     psm_mode: int = 11,
     number_range: Tuple[int, int] = (10, 200),
-    use_preprocessing: str = 'otsu'
+    use_preprocessing: str = 'otsu',
+    cm_interval: int = 10
 ) -> List[Tuple[int, int]]:
     """
     Detect measurement numbers using OCR with advanced preprocessing.
@@ -216,6 +217,7 @@ def detect_numbers(
         psm_mode: Tesseract PSM mode (6, 11, or 12)
         number_range: Valid number range as (min, max) tuple
         use_preprocessing: Preprocessing method ('otsu', 'adaptive', 'morph', 'clahe')
+        cm_interval: Valid number interval (default: 10 for 10, 20, 30, ...)
 
     Returns:
         List of (number, y_position) tuples
@@ -279,8 +281,8 @@ def detect_numbers(
             if clean_text:
                 try:
                     number = int(clean_text)
-                    # Range check based on backdrop config
-                    if min_num <= number <= max_num and number not in seen_numbers:
+                    # Range check and interval validation based on backdrop config
+                    if min_num <= number <= max_num and number % cm_interval == 0 and number not in seen_numbers:
                         seen_numbers.add(number)
                         y = data['top'][i] + data['height'][i] // 2
                         # Scale back to original coordinates if upscaled
@@ -299,7 +301,8 @@ def detect_numbers_with_config(
     scale_factor: float,
     preprocess_method: str,
     psm_mode: int,
-    number_range: Tuple[int, int] = (10, 200)
+    number_range: Tuple[int, int] = (10, 200),
+    cm_interval: int = 10
 ) -> List[Tuple[int, int, int]]:
     """
     Detect numbers with a specific OCR configuration.
@@ -313,6 +316,7 @@ def detect_numbers_with_config(
         preprocess_method: Preprocessing method ('clahe', 'adaptive', 'otsu', 'morph')
         psm_mode: Tesseract PSM mode (6, 7, 11, 12)
         number_range: Valid number range as (min, max) tuple
+        cm_interval: Valid number interval (default: 10 for 10, 20, 30, ...)
 
     Returns:
         List of (number, x_position, y_position) tuples
@@ -355,7 +359,8 @@ def detect_numbers_with_config(
     try:
         data = pytesseract.image_to_data(binary, config=custom_config, output_type=pytesseract.Output.DICT)
 
-        numbers_with_positions = []
+        # Use dict to deduplicate - keep highest confidence for each valid number
+        seen_numbers = {}
         for i in range(len(data['text'])):
             text = data['text'][i].strip()
             conf = float(data['conf'][i])
@@ -363,12 +368,18 @@ def detect_numbers_with_config(
             if conf >= 0 and text.isdigit():
                 number = int(text)
 
-                if min_num <= number <= max_num:
+                # Validate: must be in range AND a multiple of cm_interval
+                if min_num <= number <= max_num and number % cm_interval == 0:
                     # Get center position (scale back to original)
                     x = (data['left'][i] + data['width'][i] // 2) / scale_factor
                     y = (data['top'][i] + data['height'][i] // 2) / scale_factor
-                    numbers_with_positions.append((number, int(x), int(y)))
 
+                    # Keep highest confidence detection for each number
+                    if number not in seen_numbers or conf > seen_numbers[number][2]:
+                        seen_numbers[number] = (int(x), int(y), conf)
+
+        # Convert to list format (number, x, y)
+        numbers_with_positions = [(num, x, y) for num, (x, y, _) in seen_numbers.items()]
         return numbers_with_positions
     except Exception:
         return []
