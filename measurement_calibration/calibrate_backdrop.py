@@ -215,33 +215,43 @@ class PerspectiveBackdropCalibrator:
         self,
         lines: List[int],
         numbers: List[Tuple[int, int]],
-        image_height: int
+        image_height: int,
+        sequence_length: int = 0
     ) -> Dict:
-        """Calculate calibration data from detected lines and numbers."""
+        """
+        Calculate calibration data from detected lines and numbers.
+
+        Args:
+            lines: List of line y-positions used for calibration
+            numbers: List of (number, y_position) tuples used for calibration
+            image_height: Original image height for normalized coordinates
+            sequence_length: Length of the consecutive sequence (0 if not using sequence)
+
+        Returns:
+            Calibration result dictionary
+        """
         if len(lines) >= 2 and len(numbers) >= 2:
-            # Calculate spacing
+            # Calculate spacing between consecutive lines
             line_spacings = np.diff(sorted(lines))
             avg_spacing = np.mean(line_spacings)
-            spacing_cv = np.std(line_spacings) / avg_spacing
+            spacing_cv = np.std(line_spacings) / avg_spacing if avg_spacing > 0 else 0
 
-            # Determine cm interval
+            # Determine cm interval from numbers
             number_diffs = [numbers[i+1][0] - numbers[i][0] for i in range(len(numbers)-1)]
             cm_interval = abs(int(np.median(number_diffs))) if number_diffs else 10
 
             # Calculate pixels per cm
             pixels_per_cm = avg_spacing / cm_interval
 
-            # Calculate normalized units per cm
+            # Calculate normalized units per cm (for normalized coordinates 0-1)
             normalized_unit_per_pixel = 1.0 / image_height
             cm_per_normalized_unit = 1.0 / (pixels_per_cm * normalized_unit_per_pixel)
 
-            # Determine confidence
-            if len(lines) >= 15 and len(numbers) >= 15:
-                confidence = "high"
-            elif len(lines) >= 10 and len(numbers) >= 10:
-                confidence = "medium"
-            else:
-                confidence = "low"
+            # Determine confidence based on sequence quality, not just counts
+            # Key factors:
+            # 1. Sequence length (longer = more reliable)
+            # 2. Spacing consistency (lower CV = more reliable)
+            confidence = self._calculate_confidence(sequence_length, spacing_cv)
 
             return {
                 "cm_per_normalized_unit": float(cm_per_normalized_unit),
@@ -251,6 +261,7 @@ class PerspectiveBackdropCalibrator:
                 "line_spacing_pixels": float(avg_spacing),
                 "line_spacing_cv": float(spacing_cv),
                 "cm_interval": cm_interval,
+                "sequence_length": sequence_length,
                 "confidence": confidence
             }
         else:
@@ -262,9 +273,53 @@ class PerspectiveBackdropCalibrator:
                 "line_spacing_pixels": None,
                 "line_spacing_cv": None,
                 "cm_interval": None,
+                "sequence_length": 0,
                 "confidence": "failed",
                 "error": "Not enough lines or numbers detected"
             }
+
+    def _calculate_confidence(self, sequence_length: int, spacing_cv: float) -> str:
+        """
+        Calculate confidence based on consecutive sequence quality.
+
+        A good calibration has:
+        - Long consecutive sequence (8+ pairs = excellent, 5-7 = good, 3-4 = acceptable)
+        - Low spacing variation (CV < 0.05 = excellent, < 0.1 = good, < 0.2 = acceptable)
+
+        Args:
+            sequence_length: Number of consecutive number-line pairs
+            spacing_cv: Coefficient of variation for line spacing
+
+        Returns:
+            Confidence level: "high", "medium", "low", or "failed"
+        """
+        if sequence_length == 0:
+            # Fallback mode (no sequence matching used)
+            return "low"
+
+        # Primary factor: sequence length
+        if sequence_length >= 8:
+            # Excellent sequence length
+            if spacing_cv < 0.05:
+                return "high"
+        elif sequence_length >= 5:
+            # Good sequence length
+            if spacing_cv < 0.05:
+                return "high"
+            elif spacing_cv < 0.1:
+                return "medium"
+            else:
+                return "low"
+        elif sequence_length >= 3:
+            # Minimum acceptable sequence length
+            if spacing_cv < 0.05:
+                return "medium"
+            elif spacing_cv < 0.1:
+                return "low"
+            else:
+                return "low"
+        else:
+            return "failed"
 
     def calibrate(self, image: np.ndarray) -> Dict:
         """
@@ -374,10 +429,12 @@ class PerspectiveBackdropCalibrator:
         if longest_sequence:
             numbers_for_cal = [(num, y) for num, y, _ in longest_sequence]
             lines_for_cal = [line_y for _, _, line_y in longest_sequence]
+            sequence_length = len(longest_sequence)
         else:
             # Fallback: use all detected numbers and lines if matching failed
             numbers_for_cal = numbers
             lines_for_cal = lines
+            sequence_length = 0
 
         # Stage 5: Calculate calibration
         # CRITICAL: Use original image height, NOT warped image height
@@ -385,7 +442,9 @@ class PerspectiveBackdropCalibrator:
         if self.debug:
             print("Stage 5: Calculating calibration...")
 
-        calibration_data = self.calculate_calibration(lines_for_cal, numbers_for_cal, h_original)
+        calibration_data = self.calculate_calibration(
+            lines_for_cal, numbers_for_cal, h_original, sequence_length
+        )
 
         if self.debug:
             print()
@@ -394,6 +453,7 @@ class PerspectiveBackdropCalibrator:
             print("="*70)
             print(f"Detected: {len(lines)}/{self.expected_lines} lines, "
                   f"{len(numbers)}/{self.expected_numbers} numbers")
+            print(f"Consecutive sequence: {calibration_data.get('sequence_length', 0)} pairs")
 
             if calibration_data.get('cm_per_normalized_unit'):
                 print(f"Calibration: {calibration_data['cm_per_normalized_unit']:.2f} cm/normalized_unit")
