@@ -447,17 +447,22 @@ class PerspectiveBackdropCalibrator:
     def detect_lines_morphological(
         self,
         image: np.ndarray,
-        min_thickness: float = 2.5
+        min_thickness: float = 3.0
     ) -> List[int]:
         """
         Detect bold horizontal lines using Hough Transform on corrected image.
 
         On a perspective-corrected image, we can use simpler, more reliable detection.
-        This method specifically targets bold lines by using thickness validation.
+        This method specifically targets ONLY bold lines by using strict thickness validation.
+
+        Strategy:
+        - Cast a wide net with lenient Hough parameters to find all lines
+        - Measure thickness of each line accurately
+        - Keep ONLY the thickest lines (the bold 10cm demarcations)
 
         Args:
             image: Perspective-corrected backdrop image
-            min_thickness: Minimum line thickness in pixels (default 2.5 for bold lines)
+            min_thickness: Minimum line thickness in pixels (default 3.5 for bold lines)
 
         Returns:
             List of y-coordinates for detected bold lines
@@ -465,16 +470,15 @@ class PerspectiveBackdropCalibrator:
         h, w = image.shape[:2]
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-        # Try multiple edge detection thresholds to find bold lines
+        # Try multiple edge detection thresholds to find ALL lines
         detected_lines = []
 
-        # Expanded Canny thresholds to detect lines at various intensities and conditions
+        # Multiple Canny thresholds to cast a wide net
         canny_configs = [
             (30, 100),   # Original - good for clear lines
             (50, 150),   # Higher threshold - better for bold lines
             (40, 120),   # Medium threshold
             (20, 80),    # Lower threshold - catch fainter lines
-            (60, 180),   # Very high threshold - only strongest edges
         ]
 
         for canny_low, canny_high in canny_configs:
@@ -484,15 +488,14 @@ class PerspectiveBackdropCalibrator:
             # Edge detection
             edges = cv2.Canny(filtered, canny_low, canny_high)
 
-            # Use Hough Transform to detect long horizontal lines
-            # More lenient parameters to ensure we find all 20 lines
+            # Use Hough Transform with lenient parameters to find ALL lines
             lines = cv2.HoughLinesP(
                 edges,
                 rho=1,
                 theta=np.pi/180,
-                threshold=int(w * 0.12),  # More lenient: 12% (was 15%)
-                minLineLength=int(w * 0.30),  # More lenient: 30% (was 35%)
-                maxLineGap=60  # Allow even larger gaps: 60px (was 50px)
+                threshold=int(w * 0.12),  # Lenient to find all lines
+                minLineLength=int(w * 0.30),  # Lenient to find all lines
+                maxLineGap=60  # Allow gaps
             )
 
             if lines is not None:
@@ -502,9 +505,9 @@ class PerspectiveBackdropCalibrator:
                     # Check if line is horizontal (angle < 3 degrees)
                     angle = abs(np.arctan2(y2 - y1, x2 - x1) * 180 / np.pi)
                     if angle < 3 or angle > 177:
-                        # Validate line length - slightly more lenient
+                        # Validate line length
                         line_length = np.sqrt((x2 - x1)**2 + (y2 - y1)**2)
-                        if line_length >= w * 0.35:  # 35% (was 40%)
+                        if line_length >= w * 0.35:
                             y_center = int((y1 + y2) / 2)
                             detected_lines.append(y_center)
 
@@ -515,23 +518,30 @@ class PerspectiveBackdropCalibrator:
             if not filtered_coords or y - filtered_coords[-1] > 15:
                 filtered_coords.append(y)
 
-        # Validate line thickness - use more relaxed threshold (2.5 instead of 3.0)
-        validated_coords = []
-        thicknesses = []
+        # CRITICAL: Measure thickness of ALL detected lines
+        all_coords_with_thickness = []
         for y in filtered_coords:
             thickness = self._measure_line_thickness(gray, y)
-            if thickness >= min_thickness:
-                validated_coords.append(y)
-                thicknesses.append(thickness)
+            all_coords_with_thickness.append((y, thickness))
 
-        # Additional filtering: if we have many lines, keep only the thickest ones
-        if len(validated_coords) > self.expected_lines * 1.2:
-            # Sort by thickness descending and keep top expected_lines
-            coords_with_thickness = list(zip(validated_coords, thicknesses))
-            coords_with_thickness.sort(key=lambda x: x[1], reverse=True)
-            # Keep the thickest lines up to expected count
-            validated_coords = [y for y, _ in coords_with_thickness[:self.expected_lines]]
-            validated_coords.sort()  # Sort by position
+        # Sort by thickness descending
+        all_coords_with_thickness.sort(key=lambda x: x[1], reverse=True)
+
+        # Strategy: Keep only the thickest lines (bold demarcations)
+        # First, apply minimum thickness filter
+        thick_lines = [(y, t) for y, t in all_coords_with_thickness if t >= min_thickness]
+
+        # If we have more than expected, keep only the thickest ones
+        if len(thick_lines) >= self.expected_lines:
+            # Take exactly the expected number of thickest lines
+            validated_coords = [y for y, _ in thick_lines[:self.expected_lines]]
+        else:
+            # If we don't have enough thick lines, we may need to relax threshold slightly
+            # But still prioritize thickness - take the thickest lines available
+            validated_coords = [y for y, _ in all_coords_with_thickness[:self.expected_lines]]
+
+        # Sort by position (y-coordinate) for proper ordering
+        validated_coords.sort()
 
         return validated_coords
 
@@ -720,6 +730,97 @@ class PerspectiveBackdropCalibrator:
                 "error": "Not enough lines or numbers detected"
             }
 
+    def _match_numbers_to_lines(
+        self,
+        numbers: List[Tuple[int, int]],
+        lines: List[int],
+        max_distance: int = 15
+    ) -> Tuple[List[Tuple[int, int, int]], List[Tuple[int, int, int]]]:
+        """
+        Match detected numbers with nearby lines and find the longest consecutive sequence.
+
+        This strategy uses numbers as ground truth anchors - lines that align with numbers
+        are definitely the bold 10cm demarcation lines, not thin lines.
+
+        IMPORTANT: max_distance should be strict (10-15px) to ensure only numbers with
+        truly intersecting bold lines are matched, not numbers near thin lines.
+
+        Args:
+            numbers: List of (number, y_position) tuples
+            lines: List of line y-positions
+            max_distance: Maximum vertical distance (in pixels) for a line to match a number
+                         (default 15px for strict matching)
+
+        Returns:
+            Tuple of (all_matched_pairs, longest_consecutive_sequence)
+            where each item is a list of (number, number_y, line_y) tuples
+        """
+        if not numbers or not lines:
+            return [], []
+
+        # Step 1: Match each number with the closest line (if within max_distance)
+        matched_pairs = []
+        unmatched_numbers = []
+
+        for num, num_y in numbers:
+            # Find the closest line to this number
+            closest_line = min(lines, key=lambda line_y: abs(line_y - num_y))
+            distance = abs(closest_line - num_y)
+
+            if distance <= max_distance:
+                matched_pairs.append((num, num_y, closest_line))
+            else:
+                unmatched_numbers.append((num, distance))
+
+        if self.debug:
+            if unmatched_numbers:
+                print(f"  Note: {len(unmatched_numbers)} numbers had no nearby line (>{max_distance}px away)")
+                for num, dist in unmatched_numbers[:5]:  # Show first 5
+                    print(f"        Number {num}: closest line {dist:.1f}px away")
+            # Also show matched pairs for debugging
+            if matched_pairs:
+                print(f"  Matched pairs (number: distance to line):")
+                for num, num_y, line_y in matched_pairs[:10]:  # Show first 10
+                    dist = abs(line_y - num_y)
+                    print(f"        {num}cm: {dist:.1f}px")
+
+        if not matched_pairs:
+            return [], []
+
+        # Sort by number value
+        matched_pairs.sort(key=lambda x: x[0])
+
+        # Step 2: Find longest consecutive sequence
+        # Numbers should be spaced by cm_interval (e.g., 10, 20, 30...)
+        sequences = []
+        current_sequence = [matched_pairs[0]]
+
+        for i in range(1, len(matched_pairs)):
+            prev_num, _, _ = current_sequence[-1]
+            curr_num, curr_num_y, curr_line_y = matched_pairs[i]
+
+            # Check if this number is consecutive (differs by cm_interval)
+            if curr_num == prev_num + self.cm_interval:
+                current_sequence.append((curr_num, curr_num_y, curr_line_y))
+            else:
+                # Sequence broken, start a new one
+                if len(current_sequence) >= 3:  # Only keep sequences of 3+ items
+                    sequences.append(current_sequence)
+                current_sequence = [(curr_num, curr_num_y, curr_line_y)]
+
+        # Don't forget the last sequence
+        if len(current_sequence) >= 3:
+            sequences.append(current_sequence)
+
+        # Step 3: Select the longest sequence
+        if sequences:
+            longest_sequence = max(sequences, key=len)
+        else:
+            # Fallback: if no sequence of 3+, use all matched pairs
+            longest_sequence = matched_pairs if len(matched_pairs) >= 2 else []
+
+        return matched_pairs, longest_sequence
+
     def calibrate(self, image: np.ndarray) -> Dict:
         """
         Calibrate backdrop using perspective-aware detection.
@@ -794,14 +895,28 @@ class PerspectiveBackdropCalibrator:
         if self.debug:
             print(f"  [OK] Detected {len(lines)} lines via Hough Transform")
 
-        # If line detection failed but we have good OCR, use number positions as line positions
-        if len(lines) < self.expected_lines * 0.5 and len(numbers) >= self.expected_lines * 0.7:
-            if self.debug:
-                print(f"  Using number y-positions as line positions (more reliable)")
-            lines = [y_pos for _, y_pos in numbers]
+        # Stage 4: Match numbers with lines and find longest consecutive sequence
+        if self.debug:
+            print("Stage 4: Matching numbers with lines...")
 
-            if self.debug:
-                print(f"  [OK] Using {len(lines)} number-based line positions")
+        matched_pairs, longest_sequence = self._match_numbers_to_lines(numbers, lines)
+
+        if self.debug:
+            print(f"  [OK] Matched {len(matched_pairs)} number-line pairs")
+            print(f"  [OK] Longest consecutive sequence: {len(longest_sequence)} pairs")
+            if longest_sequence:
+                first_num = longest_sequence[0][0]
+                last_num = longest_sequence[-1][0]
+                print(f"      Range: {first_num} to {last_num} cm")
+
+        # Use the matched pairs for calibration (prioritize longest sequence)
+        if longest_sequence:
+            numbers_for_cal = [(num, y) for num, y, _ in longest_sequence]
+            lines_for_cal = [line_y for _, _, line_y in longest_sequence]
+        else:
+            # Fallback: use all detected numbers and lines if matching failed
+            numbers_for_cal = numbers
+            lines_for_cal = lines
 
         # Stage 5: Calculate calibration
         # CRITICAL: Use original image height, NOT warped image height
@@ -809,7 +924,7 @@ class PerspectiveBackdropCalibrator:
         if self.debug:
             print("Stage 5: Calculating calibration...")
 
-        calibration_data = self.calculate_calibration(lines, numbers, h_original)
+        calibration_data = self.calculate_calibration(lines_for_cal, numbers_for_cal, h_original)
 
         if self.debug:
             print()
