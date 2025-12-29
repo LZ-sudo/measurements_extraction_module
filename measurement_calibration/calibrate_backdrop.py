@@ -33,7 +33,13 @@ import pytesseract
 from pathlib import Path
 
 # Import shared calibration utilities
-from calibration_utils import detect_numbers_with_config
+from calibration_utils import (
+    match_numbers_to_lines,
+    find_corner_numbers_adaptive,
+    detect_lines_morphological,
+    detect_numbers_ocr
+)
+import calibration_config as config
 
 
 class PerspectiveBackdropCalibrator:
@@ -49,7 +55,6 @@ class PerspectiveBackdropCalibrator:
 
     def __init__(
         self,
-        target_config: Dict,
         tesseract_cmd: str = r"C:\Program Files\Tesseract-OCR\tesseract.exe",
         debug: bool = False,
         visualization_dir: Optional[str] = None
@@ -57,16 +62,18 @@ class PerspectiveBackdropCalibrator:
         """
         Initialize calibrator.
 
+        Configuration is loaded from calibration_config module.
+
         Args:
-            target_config: Expected detection configuration
             tesseract_cmd: Path to Tesseract executable
             debug: Enable debug output
             visualization_dir: Directory to save visualization images
         """
-        self.expected_lines = target_config['expected_lines']
-        self.expected_numbers = target_config['expected_numbers']
-        self.number_range = tuple(target_config['number_range'])
-        self.cm_interval = target_config.get('cm_interval', 10)
+        # Load configuration from config module
+        self.expected_lines = config.EXPECTED_LINES
+        self.expected_numbers = config.EXPECTED_NUMBERS
+        self.number_range = config.NUMBER_RANGE
+        self.cm_interval = config.CM_INTERVAL
 
         pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
         self.debug = debug
@@ -96,8 +103,10 @@ class PerspectiveBackdropCalibrator:
         top_number = self.number_range[1]  # 200
         bottom_number = self.number_range[0]  # 10
 
-        # Try to find all four corner numbers with adaptive OCR
-        corner_positions = self._find_corner_numbers_adaptive(image, top_number, bottom_number)
+        # Try to find all four corner numbers with adaptive OCR (using utility function)
+        corner_positions = find_corner_numbers_adaptive(
+            image, top_number, bottom_number, self.number_range, self.cm_interval, self.debug
+        )
 
         if corner_positions is None:
             if self.debug:
@@ -118,8 +127,8 @@ class PerspectiveBackdropCalibrator:
         # 1. The width/height of the numbers themselves (~30-50px)
         # 2. Any backdrop border beyond the numbers
         # 3. Some padding for safety
-        margin_x = 80  # Increased from 40 to include full number width + backdrop edge
-        margin_y = 60  # Increased from 30 to include full number height + backdrop edge
+        margin_x = config.ROI_MARGIN_X
+        margin_y = config.ROI_MARGIN_Y
 
         x_left = max(0, top_left[0] - margin_x)
         x_right = min(w - 1, top_right[0] + margin_x)
@@ -135,249 +144,6 @@ class PerspectiveBackdropCalibrator:
         ], dtype=np.float32)
 
         return corners
-
-    def _find_corner_numbers_adaptive(
-        self,
-        image: np.ndarray,
-        top_number: int,
-        bottom_number: int
-    ) -> Optional[Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int], Tuple[int, int]]]:
-        """
-        Adaptively search for four corner numbers using multiple OCR configurations.
-
-        This method tries different combinations of:
-        - Scale factors (1.5x to 5.0x) - expanded range for better coverage
-        - Preprocessing methods (clahe, adaptive, otsu, morph)
-        - PSM modes (11, 6, 7, 12)
-        - Region-based search focusing on likely corner areas
-
-        Args:
-            image: Input image
-            top_number: Number at top corners (e.g., 200)
-            bottom_number: Number at bottom corners (e.g., 10)
-
-        Returns:
-            Tuple of (top_left, top_right, bottom_left, bottom_right) positions,
-            where each position is (x, y), or None if all four corners not found
-        """
-        h, w = image.shape[:2]
-
-        # First, try region-based search (more targeted)
-        corners = self._find_corners_by_region(image, top_number, bottom_number)
-        if corners is not None:
-            if self.debug:
-                print("  Found corners using region-based search")
-            return corners
-
-        # Fallback: Try different OCR configurations on full image
-        # Expanded scale range for better detection at different distances
-        scale_factors = [3.0, 3.5, 4.0, 2.5, 4.5, 5.0, 2.0, 1.5]
-        preprocess_methods = ['clahe', 'adaptive', 'otsu', 'morph']
-        psm_modes = [11, 6, 7, 12]
-
-        for scale_factor in scale_factors:
-            for preprocess_method in preprocess_methods:
-                for psm_mode in psm_modes:
-                    # Detect numbers with this configuration using shared utility
-                    numbers_with_positions = detect_numbers_with_config(
-                        image, scale_factor, preprocess_method, psm_mode, self.number_range, self.cm_interval
-                    )
-
-                    # Try to identify the four corner numbers
-                    corners = self._identify_corner_numbers(
-                        numbers_with_positions, top_number, bottom_number, w, h
-                    )
-
-                    if corners is not None:
-                        if self.debug:
-                            print(f"  Found corners with: scale={scale_factor}, "
-                                  f"preprocess={preprocess_method}, psm={psm_mode}")
-                        return corners
-
-        # If we couldn't find all four corners
-        return None
-
-    def _find_corners_by_region(
-        self,
-        image: np.ndarray,
-        top_number: int,
-        bottom_number: int
-    ) -> Optional[Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int], Tuple[int, int]]]:
-        """
-        Search for corner numbers by focusing on specific image regions.
-
-        This method divides the image into quadrants and searches each region
-        with targeted OCR configurations, which is more robust when the backdrop
-        is partially occluded.
-
-        Args:
-            image: Input image
-            top_number: Number at top corners (e.g., 200)
-            bottom_number: Number at bottom corners (e.g., 10)
-
-        Returns:
-            Tuple of corner positions or None
-        """
-        h, w = image.shape[:2]
-
-        # Define search regions for each corner (with generous overlap)
-        # Format: (x_start, y_start, x_end, y_end)
-        regions = {
-            'top_left': (0, 0, w // 3, h // 3),
-            'top_right': (2 * w // 3, 0, w, h // 3),
-            'bottom_left': (0, 2 * h // 3, w // 3, h),
-            'bottom_right': (2 * w // 3, 2 * h // 3, w, h)
-        }
-
-        # Try focused OCR on each region
-        scale_factors = [3.0, 3.5, 4.0, 4.5]
-        preprocess_methods = ['clahe', 'adaptive']
-        psm_modes = [6, 7, 11]
-
-        corner_candidates = {
-            'top_left': [],
-            'top_right': [],
-            'bottom_left': [],
-            'bottom_right': []
-        }
-
-        for region_name, (x1, y1, x2, y2) in regions.items():
-            region_img = image[y1:y2, x1:x2]
-            expected_num = top_number if 'top' in region_name else bottom_number
-
-            for scale_factor in scale_factors:
-                for preprocess_method in preprocess_methods:
-                    for psm_mode in psm_modes:
-                        numbers = detect_numbers_with_config(
-                            region_img, scale_factor, preprocess_method,
-                            psm_mode, self.number_range, self.cm_interval
-                        )
-
-                        # Find matching numbers in this region
-                        for num, x, y in numbers:
-                            if num == expected_num:
-                                # Convert to global coordinates
-                                global_x = x1 + x
-                                global_y = y1 + y
-                                corner_candidates[region_name].append((global_x, global_y))
-
-        # Check if we found at least one candidate for each corner
-        if not all(len(candidates) > 0 for candidates in corner_candidates.values()):
-            return None
-
-        # Select the best candidate for each corner
-        # For top corners: prefer leftmost/rightmost respectively
-        # For bottom corners: prefer leftmost/rightmost respectively
-        top_left = min(corner_candidates['top_left'], key=lambda p: p[0])
-        top_right = max(corner_candidates['top_right'], key=lambda p: p[0])
-        bottom_left = min(corner_candidates['bottom_left'], key=lambda p: p[0])
-        bottom_right = max(corner_candidates['bottom_right'], key=lambda p: p[0])
-
-        # Validate the corners make geometric sense
-        if not self._validate_corner_geometry(top_left, top_right, bottom_left, bottom_right, w, h):
-            return None
-
-        return (top_left, top_right, bottom_left, bottom_right)
-
-    def _validate_corner_geometry(
-        self,
-        top_left: Tuple[int, int],
-        top_right: Tuple[int, int],
-        bottom_left: Tuple[int, int],
-        bottom_right: Tuple[int, int],
-        image_width: int,
-        image_height: int
-    ) -> bool:
-        """
-        Validate that corner positions make geometric sense.
-        Uses relaxed percentage-based thresholds instead of strict midpoint division.
-
-        Args:
-            top_left, top_right, bottom_left, bottom_right: Corner positions (x, y)
-            image_width, image_height: Image dimensions
-
-        Returns:
-            True if corners are geometrically valid
-        """
-        # Use 40/60 split instead of strict 50/50 for more flexibility
-        y_threshold_top = image_height * 0.4
-        y_threshold_bottom = image_height * 0.6
-        x_threshold_left = image_width * 0.4
-        x_threshold_right = image_width * 0.6
-
-        # Top corners should be in upper 40% of image
-        if not (top_left[1] < y_threshold_top and top_right[1] < y_threshold_top):
-            return False
-
-        # Bottom corners should be in lower 60% of image
-        if not (bottom_left[1] > y_threshold_bottom and bottom_right[1] > y_threshold_bottom):
-            return False
-
-        # Left corners should be in left 40% of image
-        if not (top_left[0] < x_threshold_left and bottom_left[0] < x_threshold_left):
-            return False
-
-        # Right corners should be in right 60% of image
-        if not (top_right[0] > x_threshold_right and bottom_right[0] > x_threshold_right):
-            return False
-
-        # Top-right should be to the right of top-left
-        if top_right[0] <= top_left[0]:
-            return False
-
-        # Bottom-right should be to the right of bottom-left
-        if bottom_right[0] <= bottom_left[0]:
-            return False
-
-        return True
-
-    def _identify_corner_numbers(
-        self,
-        numbers_with_positions: List[Tuple[int, int, int]],
-        top_number: int,
-        bottom_number: int,
-        image_width: int,
-        image_height: int
-    ) -> Optional[Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int], Tuple[int, int]]]:
-        """
-        Identify the four corner numbers from detected numbers.
-
-        Args:
-            numbers_with_positions: List of (number, x, y) tuples
-            top_number: Expected number at top corners (e.g., 200)
-            bottom_number: Expected number at bottom corners (e.g., 10)
-            image_width: Width of image
-            image_height: Height of image
-
-        Returns:
-            (top_left, top_right, bottom_left, bottom_right) positions or None
-        """
-        # Find all instances of top and bottom numbers
-        top_numbers = [(x, y) for num, x, y in numbers_with_positions if num == top_number]
-        bottom_numbers = [(x, y) for num, x, y in numbers_with_positions if num == bottom_number]
-
-        # Need at least 2 of each
-        if len(top_numbers) < 2 or len(bottom_numbers) < 2:
-            return None
-
-        # Find the two top numbers that are furthest apart (left and right)
-        top_numbers_sorted = sorted(top_numbers, key=lambda pos: pos[0])
-        top_left = top_numbers_sorted[0]
-        top_right = top_numbers_sorted[-1]
-
-        # Find the two bottom numbers that are furthest apart (left and right)
-        bottom_numbers_sorted = sorted(bottom_numbers, key=lambda pos: pos[0])
-        bottom_left = bottom_numbers_sorted[0]
-        bottom_right = bottom_numbers_sorted[-1]
-
-        # Use the more flexible validation method
-        if not self._validate_corner_geometry(
-            top_left, top_right, bottom_left, bottom_right, image_width, image_height
-        ):
-            return None
-
-        return (top_left, top_right, bottom_left, bottom_right)
-
 
     def _order_corners(self, corners: np.ndarray) -> np.ndarray:
         """
@@ -444,236 +210,6 @@ class PerspectiveBackdropCalibrator:
 
         return warped
 
-    def detect_lines_morphological(
-        self,
-        image: np.ndarray,
-        min_thickness: float = 3.0
-    ) -> List[int]:
-        """
-        Detect bold horizontal lines using Hough Transform on corrected image.
-
-        On a perspective-corrected image, we can use simpler, more reliable detection.
-        This method specifically targets ONLY bold lines by using strict thickness validation.
-
-        Strategy:
-        - Cast a wide net with lenient Hough parameters to find all lines
-        - Measure thickness of each line accurately
-        - Keep ONLY the thickest lines (the bold 10cm demarcations)
-
-        Args:
-            image: Perspective-corrected backdrop image
-            min_thickness: Minimum line thickness in pixels (default 3.5 for bold lines)
-
-        Returns:
-            List of y-coordinates for detected bold lines
-        """
-        h, w = image.shape[:2]
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-
-        # Try multiple edge detection thresholds to find ALL lines
-        detected_lines = []
-
-        # Multiple Canny thresholds to cast a wide net
-        canny_configs = [
-            (30, 100),   # Original - good for clear lines
-            (50, 150),   # Higher threshold - better for bold lines
-            (40, 120),   # Medium threshold
-            (20, 80),    # Lower threshold - catch fainter lines
-        ]
-
-        for canny_low, canny_high in canny_configs:
-            # Bilateral filter for noise reduction
-            filtered = cv2.bilateralFilter(gray, 9, 75, 75)
-
-            # Edge detection
-            edges = cv2.Canny(filtered, canny_low, canny_high)
-
-            # Use Hough Transform with lenient parameters to find ALL lines
-            lines = cv2.HoughLinesP(
-                edges,
-                rho=1,
-                theta=np.pi/180,
-                threshold=int(w * 0.12),  # Lenient to find all lines
-                minLineLength=int(w * 0.30),  # Lenient to find all lines
-                maxLineGap=60  # Allow gaps
-            )
-
-            if lines is not None:
-                # Extract y-coordinates of horizontal lines
-                for line in lines:
-                    x1, y1, x2, y2 = line[0]
-                    # Check if line is horizontal (angle < 3 degrees)
-                    angle = abs(np.arctan2(y2 - y1, x2 - x1) * 180 / np.pi)
-                    if angle < 3 or angle > 177:
-                        # Validate line length
-                        line_length = np.sqrt((x2 - x1)**2 + (y2 - y1)**2)
-                        if line_length >= w * 0.35:
-                            y_center = int((y1 + y2) / 2)
-                            detected_lines.append(y_center)
-
-        # Sort and remove duplicates within 15 pixels
-        y_coords = sorted(set(detected_lines))
-        filtered_coords = []
-        for y in y_coords:
-            if not filtered_coords or y - filtered_coords[-1] > 15:
-                filtered_coords.append(y)
-
-        # CRITICAL: Measure thickness of ALL detected lines
-        all_coords_with_thickness = []
-        for y in filtered_coords:
-            thickness = self._measure_line_thickness(gray, y)
-            all_coords_with_thickness.append((y, thickness))
-
-        # Sort by thickness descending
-        all_coords_with_thickness.sort(key=lambda x: x[1], reverse=True)
-
-        # Strategy: Keep only the thickest lines (bold demarcations)
-        # First, apply minimum thickness filter
-        thick_lines = [(y, t) for y, t in all_coords_with_thickness if t >= min_thickness]
-
-        # If we have more than expected, keep only the thickest ones
-        if len(thick_lines) >= self.expected_lines:
-            # Take exactly the expected number of thickest lines
-            validated_coords = [y for y, _ in thick_lines[:self.expected_lines]]
-        else:
-            # If we don't have enough thick lines, we may need to relax threshold slightly
-            # But still prioritize thickness - take the thickest lines available
-            validated_coords = [y for y, _ in all_coords_with_thickness[:self.expected_lines]]
-
-        # Sort by position (y-coordinate) for proper ordering
-        validated_coords.sort()
-
-        return validated_coords
-
-    def _measure_line_thickness(self, gray_image: np.ndarray, y: int, search_range: int = 15) -> float:
-        """
-        Measure the thickness of a horizontal line at a given y-coordinate.
-
-        Args:
-            gray_image: Grayscale image
-            y: Y-coordinate of the line
-            search_range: Vertical search range around y
-
-        Returns:
-            Estimated line thickness in pixels
-        """
-        h, w = gray_image.shape
-
-        # Ensure y is within bounds
-        y = max(search_range, min(h - search_range - 1, y))
-
-        # Extract horizontal profile around the line
-        profile = gray_image[y - search_range:y + search_range + 1, :]
-
-        # Average across width to get vertical intensity profile
-        vertical_profile = np.mean(profile, axis=1)
-
-        # Find the darkest point (should be the line center)
-        center_idx = np.argmin(vertical_profile)
-
-        # Measure thickness by finding where intensity rises above threshold
-        threshold = (np.min(vertical_profile) + np.mean(vertical_profile)) / 2
-
-        # Count pixels below threshold (dark pixels = line)
-        thickness = np.sum(vertical_profile < threshold)
-
-        return float(thickness)
-
-    def detect_numbers_ocr(
-        self,
-        image: np.ndarray,
-        region_width: float = 0.30
-    ) -> List[Tuple[int, int]]:
-        """
-        Detect numbers using OCR on both left and right regions.
-
-        Args:
-            image: Perspective-corrected backdrop image
-            region_width: Width of each region to scan (left and right)
-
-        Returns:
-            List of (number, y_position) tuples
-        """
-        h, w = image.shape[:2]
-        min_num, max_num = self.number_range
-
-        # Try both left and right regions (numbers appear on both sides)
-        all_numbers = {}  # Use dict to deduplicate by number value
-
-        for region_name, region in [
-            ("left", image[:, :int(w * region_width)]),
-            ("right", image[:, -int(w * region_width):])
-        ]:
-            # Upscale for better OCR (4x for better results on corrected image)
-            scale_factor = 4.0
-            region_h, region_w = region.shape[:2]
-            scaled = cv2.resize(
-                region,
-                (int(region_w * scale_factor), int(region_h * scale_factor)),
-                interpolation=cv2.INTER_CUBIC
-            )
-
-            # Convert to grayscale
-            gray = cv2.cvtColor(scaled, cv2.COLOR_BGR2GRAY)
-
-            # Try multiple preprocessing methods
-            for preprocess_method in ['clahe', 'adaptive', 'otsu']:
-                if preprocess_method == 'clahe':
-                    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-                    enhanced = clahe.apply(gray)
-                    _, binary = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-                elif preprocess_method == 'adaptive':
-                    binary = cv2.adaptiveThreshold(
-                        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                        cv2.THRESH_BINARY, 21, 10
-                    )
-                else:  # otsu
-                    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
-                # Invert if needed
-                if np.mean(binary) < 127:
-                    binary = cv2.bitwise_not(binary)
-
-                # Try multiple PSM modes
-                for psm_mode in [11, 6, 7]:
-                    custom_config = f'--psm {psm_mode} --oem 3 -c tessedit_char_whitelist=0123456789'
-
-                    try:
-                        data = pytesseract.image_to_data(
-                            binary,
-                            config=custom_config,
-                            output_type=pytesseract.Output.DICT
-                        )
-
-                        for i in range(len(data['text'])):
-                            text = data['text'][i].strip()
-                            conf = float(data['conf'][i])
-
-                            if conf >= 0 and text.isdigit():
-                                number = int(text)
-
-                                # Validate: must be in range AND a multiple of cm_interval
-                                if min_num <= number <= max_num and number % self.cm_interval == 0:
-                                    y = data['top'][i] + data['height'][i] // 2
-                                    y_original = int(y / scale_factor)
-
-                                    # Keep highest confidence detection for each number
-                                    if number not in all_numbers or conf > all_numbers[number][1]:
-                                        all_numbers[number] = (y_original, conf)
-                    except Exception:
-                        continue
-
-                # Early exit if we found enough numbers
-                if len(all_numbers) >= self.expected_numbers * 0.9:
-                    break
-
-            if len(all_numbers) >= self.expected_numbers * 0.9:
-                break
-
-        # Convert back to list format
-        numbers_with_pos = [(num, y_pos) for num, (y_pos, conf) in all_numbers.items()]
-        numbers_with_pos.sort(key=lambda x: x[1])
-        return numbers_with_pos
 
     def calculate_calibration(
         self,
@@ -730,97 +266,6 @@ class PerspectiveBackdropCalibrator:
                 "error": "Not enough lines or numbers detected"
             }
 
-    def _match_numbers_to_lines(
-        self,
-        numbers: List[Tuple[int, int]],
-        lines: List[int],
-        max_distance: int = 15
-    ) -> Tuple[List[Tuple[int, int, int]], List[Tuple[int, int, int]]]:
-        """
-        Match detected numbers with nearby lines and find the longest consecutive sequence.
-
-        This strategy uses numbers as ground truth anchors - lines that align with numbers
-        are definitely the bold 10cm demarcation lines, not thin lines.
-
-        IMPORTANT: max_distance should be strict (10-15px) to ensure only numbers with
-        truly intersecting bold lines are matched, not numbers near thin lines.
-
-        Args:
-            numbers: List of (number, y_position) tuples
-            lines: List of line y-positions
-            max_distance: Maximum vertical distance (in pixels) for a line to match a number
-                         (default 15px for strict matching)
-
-        Returns:
-            Tuple of (all_matched_pairs, longest_consecutive_sequence)
-            where each item is a list of (number, number_y, line_y) tuples
-        """
-        if not numbers or not lines:
-            return [], []
-
-        # Step 1: Match each number with the closest line (if within max_distance)
-        matched_pairs = []
-        unmatched_numbers = []
-
-        for num, num_y in numbers:
-            # Find the closest line to this number
-            closest_line = min(lines, key=lambda line_y: abs(line_y - num_y))
-            distance = abs(closest_line - num_y)
-
-            if distance <= max_distance:
-                matched_pairs.append((num, num_y, closest_line))
-            else:
-                unmatched_numbers.append((num, distance))
-
-        if self.debug:
-            if unmatched_numbers:
-                print(f"  Note: {len(unmatched_numbers)} numbers had no nearby line (>{max_distance}px away)")
-                for num, dist in unmatched_numbers[:5]:  # Show first 5
-                    print(f"        Number {num}: closest line {dist:.1f}px away")
-            # Also show matched pairs for debugging
-            if matched_pairs:
-                print(f"  Matched pairs (number: distance to line):")
-                for num, num_y, line_y in matched_pairs[:10]:  # Show first 10
-                    dist = abs(line_y - num_y)
-                    print(f"        {num}cm: {dist:.1f}px")
-
-        if not matched_pairs:
-            return [], []
-
-        # Sort by number value
-        matched_pairs.sort(key=lambda x: x[0])
-
-        # Step 2: Find longest consecutive sequence
-        # Numbers should be spaced by cm_interval (e.g., 10, 20, 30...)
-        sequences = []
-        current_sequence = [matched_pairs[0]]
-
-        for i in range(1, len(matched_pairs)):
-            prev_num, _, _ = current_sequence[-1]
-            curr_num, curr_num_y, curr_line_y = matched_pairs[i]
-
-            # Check if this number is consecutive (differs by cm_interval)
-            if curr_num == prev_num + self.cm_interval:
-                current_sequence.append((curr_num, curr_num_y, curr_line_y))
-            else:
-                # Sequence broken, start a new one
-                if len(current_sequence) >= 3:  # Only keep sequences of 3+ items
-                    sequences.append(current_sequence)
-                current_sequence = [(curr_num, curr_num_y, curr_line_y)]
-
-        # Don't forget the last sequence
-        if len(current_sequence) >= 3:
-            sequences.append(current_sequence)
-
-        # Step 3: Select the longest sequence
-        if sequences:
-            longest_sequence = max(sequences, key=len)
-        else:
-            # Fallback: if no sequence of 3+, use all matched pairs
-            longest_sequence = matched_pairs if len(matched_pairs) >= 2 else []
-
-        return matched_pairs, longest_sequence
-
     def calibrate(self, image: np.ndarray) -> Dict:
         """
         Calibrate backdrop using perspective-aware detection.
@@ -875,7 +320,13 @@ class PerspectiveBackdropCalibrator:
         if self.debug:
             print("Stage 2: Detecting numbers with OCR in ROI...")
 
-        numbers_roi = self.detect_numbers_ocr(roi)
+        numbers_roi = detect_numbers_ocr(
+            roi,
+            number_range=self.number_range,
+            cm_interval=self.cm_interval,
+            expected_numbers=self.expected_numbers,
+            region_width=config.NUMBER_DETECTION_REGION_WIDTH
+        )
 
         # Convert ROI coordinates back to original image coordinates
         numbers = [(num, y_pos + roi_bounds[1]) for num, y_pos in numbers_roi]
@@ -887,7 +338,11 @@ class PerspectiveBackdropCalibrator:
         if self.debug:
             print("Stage 3: Detecting horizontal lines in ROI...")
 
-        lines_roi = self.detect_lines_morphological(roi)
+        lines_roi = detect_lines_morphological(
+            roi,
+            expected_lines=self.expected_lines,
+            min_thickness=config.LINE_MIN_THICKNESS
+        )
 
         # Convert ROI coordinates back to original image coordinates
         lines = [y_pos + roi_bounds[1] for y_pos in lines_roi]
@@ -899,7 +354,13 @@ class PerspectiveBackdropCalibrator:
         if self.debug:
             print("Stage 4: Matching numbers with lines...")
 
-        matched_pairs, longest_sequence = self._match_numbers_to_lines(numbers, lines)
+        matched_pairs, longest_sequence = match_numbers_to_lines(
+            numbers, lines,
+            cm_interval=self.cm_interval,
+            max_distance=config.NUMBER_LINE_MATCH_DISTANCE,
+            min_sequence_length=config.MIN_CONSECUTIVE_SEQUENCE_LENGTH,
+            debug=self.debug
+        )
 
         if self.debug:
             print(f"  [OK] Matched {len(matched_pairs)} number-line pairs")
@@ -1014,7 +475,6 @@ class PerspectiveBackdropCalibrator:
 
 def calibrate_backdrop(
     image_path: str,
-    config_path: str,
     output_calibration_path: Optional[str] = None,
     visualization_dir: Optional[str] = None,
     tesseract_cmd: str = r"C:\Program Files\Tesseract-OCR\tesseract.exe",
@@ -1023,9 +483,10 @@ def calibrate_backdrop(
     """
     Calibrate a backdrop image using perspective-aware detection.
 
+    Configuration is loaded from calibration_config module (no JSON file needed).
+
     Args:
         image_path: Path to input image
-        config_path: Path to backdrop config JSON
         output_calibration_path: Optional path to save calibration data
         visualization_dir: Optional directory to save visualization images
         tesseract_cmd: Path to Tesseract executable
@@ -1039,13 +500,8 @@ def calibrate_backdrop(
     if image is None:
         raise ValueError(f"Could not read image from {image_path}")
 
-    # Load configuration
-    with open(config_path, 'r') as f:
-        target_config = json.load(f)
-
-    # Perform calibration
+    # Perform calibration (config loaded from calibration_config.py)
     calibrator = PerspectiveBackdropCalibrator(
-        target_config,
         tesseract_cmd,
         debug,
         visualization_dir
@@ -1070,7 +526,6 @@ if __name__ == "__main__":
         description="Calibrate measurement backdrop using perspective-aware detection"
     )
     parser.add_argument("input_image", type=str, help="Path to backdrop image")
-    parser.add_argument("config", type=str, help="Path to backdrop configuration JSON")
     parser.add_argument(
         "-c", "--calibration-output",
         type=str,
@@ -1095,10 +550,9 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    # Perform calibration
+    # Perform calibration (config is now loaded from calibration_config.py)
     result = calibrate_backdrop(
         args.input_image,
-        args.config,
         args.calibration_output,
         args.visualization_dir,
         args.tesseract_cmd,
