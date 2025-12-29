@@ -113,9 +113,13 @@ class PerspectiveBackdropCalibrator:
             print(f"    Bottom-left {bottom_number}: {bottom_left}")
             print(f"    Bottom-right {bottom_number}: {bottom_right}")
 
-        # Add margins around detected corners to include the full backdrop
-        margin_x = 40
-        margin_y = 30
+        # Add generous margins to include full backdrop beyond the corner numbers
+        # Corner positions are at number centers, so we need extra space for:
+        # 1. The width/height of the numbers themselves (~30-50px)
+        # 2. Any backdrop border beyond the numbers
+        # 3. Some padding for safety
+        margin_x = 80  # Increased from 40 to include full number width + backdrop edge
+        margin_y = 60  # Increased from 30 to include full number height + backdrop edge
 
         x_left = max(0, top_left[0] - margin_x)
         x_right = min(w - 1, top_right[0] + margin_x)
@@ -142,9 +146,10 @@ class PerspectiveBackdropCalibrator:
         Adaptively search for four corner numbers using multiple OCR configurations.
 
         This method tries different combinations of:
-        - Scale factors (2.0x to 4.0x)
+        - Scale factors (1.5x to 5.0x) - expanded range for better coverage
         - Preprocessing methods (clahe, adaptive, otsu, morph)
         - PSM modes (11, 6, 7, 12)
+        - Region-based search focusing on likely corner areas
 
         Args:
             image: Input image
@@ -157,8 +162,16 @@ class PerspectiveBackdropCalibrator:
         """
         h, w = image.shape[:2]
 
-        # Try different OCR configurations
-        scale_factors = [2.5, 3.0, 3.5, 4.0, 2.0]
+        # First, try region-based search (more targeted)
+        corners = self._find_corners_by_region(image, top_number, bottom_number)
+        if corners is not None:
+            if self.debug:
+                print("  Found corners using region-based search")
+            return corners
+
+        # Fallback: Try different OCR configurations on full image
+        # Expanded scale range for better detection at different distances
+        scale_factors = [3.0, 3.5, 4.0, 2.5, 4.5, 5.0, 2.0, 1.5]
         preprocess_methods = ['clahe', 'adaptive', 'otsu', 'morph']
         psm_modes = [11, 6, 7, 12]
 
@@ -183,6 +196,140 @@ class PerspectiveBackdropCalibrator:
 
         # If we couldn't find all four corners
         return None
+
+    def _find_corners_by_region(
+        self,
+        image: np.ndarray,
+        top_number: int,
+        bottom_number: int
+    ) -> Optional[Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int], Tuple[int, int]]]:
+        """
+        Search for corner numbers by focusing on specific image regions.
+
+        This method divides the image into quadrants and searches each region
+        with targeted OCR configurations, which is more robust when the backdrop
+        is partially occluded.
+
+        Args:
+            image: Input image
+            top_number: Number at top corners (e.g., 200)
+            bottom_number: Number at bottom corners (e.g., 10)
+
+        Returns:
+            Tuple of corner positions or None
+        """
+        h, w = image.shape[:2]
+
+        # Define search regions for each corner (with generous overlap)
+        # Format: (x_start, y_start, x_end, y_end)
+        regions = {
+            'top_left': (0, 0, w // 3, h // 3),
+            'top_right': (2 * w // 3, 0, w, h // 3),
+            'bottom_left': (0, 2 * h // 3, w // 3, h),
+            'bottom_right': (2 * w // 3, 2 * h // 3, w, h)
+        }
+
+        # Try focused OCR on each region
+        scale_factors = [3.0, 3.5, 4.0, 4.5]
+        preprocess_methods = ['clahe', 'adaptive']
+        psm_modes = [6, 7, 11]
+
+        corner_candidates = {
+            'top_left': [],
+            'top_right': [],
+            'bottom_left': [],
+            'bottom_right': []
+        }
+
+        for region_name, (x1, y1, x2, y2) in regions.items():
+            region_img = image[y1:y2, x1:x2]
+            expected_num = top_number if 'top' in region_name else bottom_number
+
+            for scale_factor in scale_factors:
+                for preprocess_method in preprocess_methods:
+                    for psm_mode in psm_modes:
+                        numbers = detect_numbers_with_config(
+                            region_img, scale_factor, preprocess_method,
+                            psm_mode, self.number_range, self.cm_interval
+                        )
+
+                        # Find matching numbers in this region
+                        for num, x, y in numbers:
+                            if num == expected_num:
+                                # Convert to global coordinates
+                                global_x = x1 + x
+                                global_y = y1 + y
+                                corner_candidates[region_name].append((global_x, global_y))
+
+        # Check if we found at least one candidate for each corner
+        if not all(len(candidates) > 0 for candidates in corner_candidates.values()):
+            return None
+
+        # Select the best candidate for each corner
+        # For top corners: prefer leftmost/rightmost respectively
+        # For bottom corners: prefer leftmost/rightmost respectively
+        top_left = min(corner_candidates['top_left'], key=lambda p: p[0])
+        top_right = max(corner_candidates['top_right'], key=lambda p: p[0])
+        bottom_left = min(corner_candidates['bottom_left'], key=lambda p: p[0])
+        bottom_right = max(corner_candidates['bottom_right'], key=lambda p: p[0])
+
+        # Validate the corners make geometric sense
+        if not self._validate_corner_geometry(top_left, top_right, bottom_left, bottom_right, w, h):
+            return None
+
+        return (top_left, top_right, bottom_left, bottom_right)
+
+    def _validate_corner_geometry(
+        self,
+        top_left: Tuple[int, int],
+        top_right: Tuple[int, int],
+        bottom_left: Tuple[int, int],
+        bottom_right: Tuple[int, int],
+        image_width: int,
+        image_height: int
+    ) -> bool:
+        """
+        Validate that corner positions make geometric sense.
+        Uses relaxed percentage-based thresholds instead of strict midpoint division.
+
+        Args:
+            top_left, top_right, bottom_left, bottom_right: Corner positions (x, y)
+            image_width, image_height: Image dimensions
+
+        Returns:
+            True if corners are geometrically valid
+        """
+        # Use 40/60 split instead of strict 50/50 for more flexibility
+        y_threshold_top = image_height * 0.4
+        y_threshold_bottom = image_height * 0.6
+        x_threshold_left = image_width * 0.4
+        x_threshold_right = image_width * 0.6
+
+        # Top corners should be in upper 40% of image
+        if not (top_left[1] < y_threshold_top and top_right[1] < y_threshold_top):
+            return False
+
+        # Bottom corners should be in lower 60% of image
+        if not (bottom_left[1] > y_threshold_bottom and bottom_right[1] > y_threshold_bottom):
+            return False
+
+        # Left corners should be in left 40% of image
+        if not (top_left[0] < x_threshold_left and bottom_left[0] < x_threshold_left):
+            return False
+
+        # Right corners should be in right 60% of image
+        if not (top_right[0] > x_threshold_right and bottom_right[0] > x_threshold_right):
+            return False
+
+        # Top-right should be to the right of top-left
+        if top_right[0] <= top_left[0]:
+            return False
+
+        # Bottom-right should be to the right of bottom-left
+        if bottom_right[0] <= bottom_left[0]:
+            return False
+
+        return True
 
     def _identify_corner_numbers(
         self,
@@ -223,22 +370,10 @@ class PerspectiveBackdropCalibrator:
         bottom_left = bottom_numbers_sorted[0]
         bottom_right = bottom_numbers_sorted[-1]
 
-        # Validate that corners make sense:
-        # - Top numbers should be in upper half
-        # - Bottom numbers should be in lower half
-        # - Left numbers should be in left half
-        # - Right numbers should be in right half
-
-        mid_y = image_height / 2
-        mid_x = image_width / 2
-
-        if not (top_left[1] < mid_y and top_right[1] < mid_y):
-            return None
-        if not (bottom_left[1] > mid_y and bottom_right[1] > mid_y):
-            return None
-        if not (top_left[0] < mid_x and bottom_left[0] < mid_x):
-            return None
-        if not (top_right[0] > mid_x and bottom_right[0] > mid_x):
+        # Use the more flexible validation method
+        if not self._validate_corner_geometry(
+            top_left, top_right, bottom_left, bottom_right, image_width, image_height
+        ):
             return None
 
         return (top_left, top_right, bottom_left, bottom_right)
@@ -312,7 +447,7 @@ class PerspectiveBackdropCalibrator:
     def detect_lines_morphological(
         self,
         image: np.ndarray,
-        min_thickness: float = 3.0
+        min_thickness: float = 2.5
     ) -> List[int]:
         """
         Detect bold horizontal lines using Hough Transform on corrected image.
@@ -322,7 +457,7 @@ class PerspectiveBackdropCalibrator:
 
         Args:
             image: Perspective-corrected backdrop image
-            min_thickness: Minimum line thickness in pixels (default 3.0 for bold lines)
+            min_thickness: Minimum line thickness in pixels (default 2.5 for bold lines)
 
         Returns:
             List of y-coordinates for detected bold lines
@@ -333,11 +468,13 @@ class PerspectiveBackdropCalibrator:
         # Try multiple edge detection thresholds to find bold lines
         detected_lines = []
 
-        # Multiple Canny thresholds to detect lines at different intensities
+        # Expanded Canny thresholds to detect lines at various intensities and conditions
         canny_configs = [
             (30, 100),   # Original - good for clear lines
             (50, 150),   # Higher threshold - better for bold lines
             (40, 120),   # Medium threshold
+            (20, 80),    # Lower threshold - catch fainter lines
+            (60, 180),   # Very high threshold - only strongest edges
         ]
 
         for canny_low, canny_high in canny_configs:
@@ -348,13 +485,14 @@ class PerspectiveBackdropCalibrator:
             edges = cv2.Canny(filtered, canny_low, canny_high)
 
             # Use Hough Transform to detect long horizontal lines
+            # More lenient parameters to ensure we find all 20 lines
             lines = cv2.HoughLinesP(
                 edges,
                 rho=1,
                 theta=np.pi/180,
-                threshold=int(w * 0.15),  # More lenient threshold
-                minLineLength=int(w * 0.35),  # More lenient minimum length
-                maxLineGap=50  # Allow larger gaps for bold lines
+                threshold=int(w * 0.12),  # More lenient: 12% (was 15%)
+                minLineLength=int(w * 0.30),  # More lenient: 30% (was 35%)
+                maxLineGap=60  # Allow even larger gaps: 60px (was 50px)
             )
 
             if lines is not None:
@@ -364,9 +502,9 @@ class PerspectiveBackdropCalibrator:
                     # Check if line is horizontal (angle < 3 degrees)
                     angle = abs(np.arctan2(y2 - y1, x2 - x1) * 180 / np.pi)
                     if angle < 3 or angle > 177:
-                        # Validate line length
+                        # Validate line length - slightly more lenient
                         line_length = np.sqrt((x2 - x1)**2 + (y2 - y1)**2)
-                        if line_length >= w * 0.4:
+                        if line_length >= w * 0.35:  # 35% (was 40%)
                             y_center = int((y1 + y2) / 2)
                             detected_lines.append(y_center)
 
@@ -377,7 +515,7 @@ class PerspectiveBackdropCalibrator:
             if not filtered_coords or y - filtered_coords[-1] > 15:
                 filtered_coords.append(y)
 
-        # Validate line thickness - CRITICAL for detecting only bold lines
+        # Validate line thickness - use more relaxed threshold (2.5 instead of 3.0)
         validated_coords = []
         thicknesses = []
         for y in filtered_coords:
@@ -504,7 +642,8 @@ class PerspectiveBackdropCalibrator:
                             if conf >= 0 and text.isdigit():
                                 number = int(text)
 
-                                if min_num <= number <= max_num:
+                                # Validate: must be in range AND a multiple of cm_interval
+                                if min_num <= number <= max_num and number % self.cm_interval == 0:
                                     y = data['top'][i] + data['height'][i] // 2
                                     y_original = int(y / scale_factor)
 
