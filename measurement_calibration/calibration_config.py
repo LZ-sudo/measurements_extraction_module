@@ -5,8 +5,6 @@ Calibration Configuration
 This module contains all configuration parameters for the backdrop calibration system,
 including OCR settings, line detection parameters, and expected measurements.
 
-Author: Calibration Module
-Date: 2025
 """
 
 # ============================================================================

@@ -223,7 +223,7 @@ def segment_body(
 
     # Save output if path provided
     if output_path:
-        with open(output_path, 'w') as f:
+        with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(height_data, f, indent=2)
         print(f"Body height coordinates saved to {output_path}")
 

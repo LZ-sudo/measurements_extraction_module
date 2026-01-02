@@ -289,7 +289,7 @@ def detect_pose(
 
     # Save output if path provided
     if output_path:
-        with open(output_path, 'w') as f:
+        with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(landmark_pairs, f, indent=2)
         print(f"Landmark coordinates saved to {output_path}")
 

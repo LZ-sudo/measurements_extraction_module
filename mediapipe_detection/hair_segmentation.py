@@ -339,7 +339,7 @@ def segment_hair(
 
     # Save output if path provided
     if output_path:
-        with open(output_path, 'w') as f:
+        with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(hair_data, f, indent=2)
         print(f"Hair length coordinates saved to {output_path}")
 
