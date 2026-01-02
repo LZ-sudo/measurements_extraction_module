@@ -31,9 +31,7 @@ import yaml
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'hair_classification_model'))
 
 from mediapipe_detection.hair_segmentation import segment_hair
-from hair_classification_model.src.model import load_model
-from hair_classification_model.src.predict import HairPredictor
-from hair_classification_model.src.dataset import get_class_names
+from hair_classification_model.classify_image_convnext import load_models as load_classification_models_impl
 
 
 def load_config():
@@ -48,39 +46,6 @@ def load_config():
         return None
 
 
-def load_classification_models(checkpoint_type, checkpoint_color, data_dir_type, data_dir_color, device):
-    """Load both hair type and color classification models"""
-
-    print("Loading classification models...")
-
-    # Get class names for both tasks
-    type_classes = get_class_names(data_dir_type)
-    color_classes = get_class_names(data_dir_color)
-
-    print(f"  Hair Type Classes: {type_classes}")
-    print(f"  Hair Color Classes: {color_classes}")
-
-    # Load hair type model
-    model_type = load_model(
-        checkpoint_type,
-        num_classes=len(type_classes),
-        model_name='convnext_tiny_in22k'
-    )
-    predictor_type = HairPredictor(model_type, device, classes=type_classes)
-
-    # Load hair color model
-    model_color = load_model(
-        checkpoint_color,
-        num_classes=len(color_classes),
-        model_name='convnext_tiny_in22k'
-    )
-    predictor_color = HairPredictor(model_color, device, classes=color_classes)
-
-    print("✓ Classification models loaded successfully\n")
-
-    return predictor_type, predictor_color
-
-
 def classify_hair_from_image(
     image_path,
     output_json_path=None,
@@ -89,6 +54,8 @@ def classify_hair_from_image(
     checkpoint_color=None,
     data_dir_type=None,
     data_dir_color=None,
+    classes_type=None,
+    classes_color=None,
     use_face_detection=True,
     verbose=True
 ):
@@ -103,6 +70,8 @@ def classify_hair_from_image(
         checkpoint_color: Path to hair color model checkpoint
         data_dir_type: Data directory for hair type classes
         data_dir_color: Data directory for hair color classes
+        classes_type: Fallback class names for hair type if data_dir doesn't exist (optional)
+        classes_color: Fallback class names for hair color if data_dir doesn't exist (optional)
         use_face_detection: Whether to use face detection for segmentation
         verbose: Whether to print detailed output
 
@@ -150,12 +119,14 @@ def classify_hair_from_image(
         if verbose:
             print(f"Using device: {device}\n")
 
-        predictor_type, predictor_color = load_classification_models(
+        predictor_type, predictor_color, _, _ = load_classification_models_impl(
             checkpoint_type,
             checkpoint_color,
             data_dir_type,
             data_dir_color,
-            device
+            device,
+            classes_type=classes_type,
+            classes_color=classes_color
         )
 
         # Step 3: Classify the isolated hair
@@ -248,11 +219,17 @@ def main():
             default_data_dir_type = os.path.join(base_dir, default_data_dir_type)
         if default_data_dir_color and not os.path.isabs(default_data_dir_color):
             default_data_dir_color = os.path.join(base_dir, default_data_dir_color)
+
+        # Get fallback classes from config
+        default_classes_type = config['classification'].get('classes_type', None)
+        default_classes_color = config['classification'].get('classes_color', None)
     else:
         default_checkpoint_type = None
         default_checkpoint_color = None
         default_data_dir_type = None
         default_data_dir_color = None
+        default_classes_type = None
+        default_classes_color = None
 
     parser = argparse.ArgumentParser(
         description='Combined Hair Segmentation and Classification Pipeline',
@@ -339,13 +316,8 @@ Configuration:
         print("Error: Hair color data directory not specified")
         sys.exit(1)
 
-    if not os.path.exists(args.data_dir_type):
-        print(f"Error: Hair type data directory not found: {args.data_dir_type}")
-        sys.exit(1)
-
-    if not os.path.exists(args.data_dir_color):
-        print(f"Error: Hair color data directory not found: {args.data_dir_color}")
-        sys.exit(1)
+    # Note: Data directories are now optional if fallback classes are provided in config
+    # Check will happen in load_models with fallback support
 
     # Run the pipeline
     try:
@@ -357,6 +329,8 @@ Configuration:
             checkpoint_color=args.checkpoint_color,
             data_dir_type=args.data_dir_type,
             data_dir_color=args.data_dir_color,
+            classes_type=default_classes_type,
+            classes_color=default_classes_color,
             use_face_detection=not args.no_face_detection,
             verbose=not args.quiet
         )
