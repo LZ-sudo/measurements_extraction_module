@@ -40,6 +40,7 @@ from calibration_utils import (
     detect_numbers_ocr
 )
 import calibration_config as config
+from camera_calibration import CameraCalibrator
 
 
 class PerspectiveBackdropCalibrator:
