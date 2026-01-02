@@ -12,6 +12,7 @@ import mediapipe as mp
 import json
 from typing import Dict, Optional, Tuple
 import os
+from PIL import Image
 
 
 class HairSegmenter:
@@ -129,12 +130,14 @@ class HairSegmenter:
             # No face detected, use top portion of image
             return 0, int(h * 0.5), 0, w
 
-    def segment(self, image: np.ndarray) -> Dict:
+    def segment(self, image: np.ndarray, return_mask: bool = False, return_isolated: bool = False) -> Dict:
         """
         Perform hair segmentation on an image and extract hair length measurements.
 
         Args:
             image: Input image as numpy array (BGR format from OpenCV).
+            return_mask: If True, includes the segmentation mask in the returned dictionary.
+            return_isolated: If True, includes isolated hair image (BGRA with transparent background).
 
         Returns:
             Dictionary containing normalized hair length coordinates:
@@ -142,7 +145,9 @@ class HairSegmenter:
                 "hair_length": {
                     "top": {"y": ...},     # Normalized y-coordinate of topmost hair pixel
                     "bottom": {"y": ...}   # Normalized y-coordinate of bottommost hair pixel
-                }
+                },
+                "mask": np.ndarray (optional),      # Binary mask if return_mask=True
+                "isolated": np.ndarray (optional)   # BGRA image if return_isolated=True
             }
         """
         h, w = image.shape[:2]
@@ -197,6 +202,22 @@ class HairSegmenter:
                 "top": {"y": top_y / h},
                 "bottom": {"y": bottom_y / h}
             }
+
+        # Include mask if requested
+        if return_mask:
+            hair_data["mask"] = full_mask
+
+        # Include isolated hair image if requested
+        if return_isolated:
+            # Create BGRA image (BGR + Alpha channel)
+            bgra_image = np.zeros((h, w, 4), dtype=np.uint8)
+            # Expand mask to 3 channels for RGB masking
+            mask_3channel = np.stack([full_mask, full_mask, full_mask], axis=2)
+            # Copy RGB values only where hair is detected (multiply by mask)
+            bgra_image[:, :, 0:3] = image * mask_3channel
+            # Set alpha channel: 255 (opaque) where hair is detected, 0 (transparent) elsewhere
+            bgra_image[:, :, 3] = full_mask * 255
+            hair_data["isolated"] = bgra_image
 
         return hair_data
 
@@ -305,7 +326,8 @@ def segment_hair(
     output_path: Optional[str] = None,
     model_path: Optional[str] = None,
     use_face_detection: bool = True,
-    visualize_path: Optional[str] = None
+    visualize_path: Optional[str] = None,
+    isolated_hair_path: Optional[str] = None
 ) -> Dict:
     """
     Convenience function to segment hair in an image file and extract hair length.
@@ -316,6 +338,7 @@ def segment_hair(
         model_path: Optional path to hair segmentation model.
         use_face_detection: Whether to use face detection (recommended for full-body images).
         visualize_path: Optional path to save visualization image.
+        isolated_hair_path: Optional path to save isolated hair as PNG with transparent background.
 
     Returns:
         Dictionary containing normalized hair length coordinates.
@@ -327,7 +350,7 @@ def segment_hair(
 
     # Create segmenter and process image
     segmenter = HairSegmenter(model_path=model_path, use_face_detection=use_face_detection)
-    hair_data = segmenter.segment(image)
+    hair_data = segmenter.segment(image, return_isolated=bool(isolated_hair_path))
 
     # Generate visualization if requested
     if visualize_path:
@@ -335,12 +358,29 @@ def segment_hair(
         cv2.imwrite(visualize_path, annotated_image)
         print(f"Visualization saved to {visualize_path}")
 
+    # Generate isolated hair PNG if requested
+    if isolated_hair_path and "isolated" in hair_data:
+        # Convert BGRA to RGBA for PIL (OpenCV uses BGR, PIL uses RGB)
+        bgra_image = hair_data["isolated"]
+        # Split channels: B, G, R, A
+        b, g, r, a = cv2.split(bgra_image)
+        # Merge as R, G, B, A for PIL
+        rgba_image = cv2.merge([r, g, b, a])
+        # Convert to PIL Image and save with transparency
+        pil_image = Image.fromarray(rgba_image, mode='RGBA')
+        pil_image.save(isolated_hair_path, 'PNG')
+        print(f"Isolated hair image saved to {isolated_hair_path}")
+        # Remove the image array from the returned data to keep it clean
+        del hair_data["isolated"]
+
     segmenter.close()
 
     # Save output if path provided
     if output_path:
+        # Create a clean copy for JSON output (without numpy arrays)
+        json_data = {k: v for k, v in hair_data.items() if not isinstance(v, np.ndarray)}
         with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(hair_data, f, indent=2)
+            json.dump(json_data, f, indent=2)
         print(f"Hair length coordinates saved to {output_path}")
 
     return hair_data
@@ -353,6 +393,7 @@ if __name__ == "__main__":
     parser.add_argument("input_image", type=str, help="Path to input image")
     parser.add_argument("-o", "--output", type=str, help="Path to save JSON output")
     parser.add_argument("-v", "--visualize", type=str, help="Path to save visualization image with segmentation overlay")
+    parser.add_argument("-i", "--isolated", type=str, help="Path to save isolated hair as PNG with transparent background")
     parser.add_argument("--model", type=str, help="Path to hair segmentation model (.tflite)")
     parser.add_argument("--no-face-detection", action="store_true",
                        help="Disable face detection (use for close-up head shots)")
@@ -365,7 +406,8 @@ if __name__ == "__main__":
         args.output,
         args.model,
         use_face_detection=not args.no_face_detection,
-        visualize_path=args.visualize
+        visualize_path=args.visualize,
+        isolated_hair_path=args.isolated
     )
 
     # Print the results

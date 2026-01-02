@@ -1,0 +1,3 @@
+[submodule "hair_classification_model"]
+	path = hair_classification_model
+	url = https://github.com/LZ-sudo/hair_classification_model.git
