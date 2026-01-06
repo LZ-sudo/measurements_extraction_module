@@ -176,7 +176,8 @@ class MeasurementExtractor:
             height_cm = extract_height(
                 detections['body'],
                 self.calibration_data,
-                self.image_path
+                self.image_path,
+                pose_data=detections.get('pose')  # Pass pose data for ankle landmarks
             )
             if height_cm is not None:
                 measurements['body_measurements']['height_cm'] = height_cm

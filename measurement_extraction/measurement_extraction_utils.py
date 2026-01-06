@@ -20,6 +20,77 @@ from typing import Dict, Tuple, Optional, List
 from pathlib import Path
 
 
+def create_perspective_transform(calibration_data: Dict) -> Optional[np.ndarray]:
+    """
+    Create homography matrix for perspective transformation from backdrop calibration.
+
+    This transforms image coordinates to real-world backdrop coordinates (in cm),
+    correcting for perspective distortion and camera angle.
+
+    Args:
+        calibration_data: Calibration data containing backdrop_corners
+
+    Returns:
+        3x3 homography matrix, or None if corners not available
+    """
+    if 'backdrop_corners' not in calibration_data:
+        return None
+
+    # Detected corners in image (pixels)
+    corners_image = np.array(calibration_data['backdrop_corners'], dtype=np.float32)
+
+    # Corresponding physical positions on backdrop (cm)
+    # Backdrop coordinate system: origin at bottom-left
+    # Top-left corner = (0cm, 200cm) - at 200cm height line
+    # Top-right corner = (200cm, 200cm) - at 200cm height line
+    # Bottom-right corner = (200cm, 10cm) - at 10cm height line
+    # Bottom-left corner = (0cm, 10cm) - at 10cm height line
+    corners_world = np.array([
+        [0, 200],      # Top-left: 200cm height, 0cm from left
+        [200, 200],    # Top-right: 200cm height, 200cm from left
+        [200, 10],     # Bottom-right: 10cm height, 200cm from left
+        [0, 10]        # Bottom-left: 10cm height, 0cm from left
+    ], dtype=np.float32)
+
+    # Compute homography matrix
+    H, _ = cv2.findHomography(corners_image, corners_world)
+
+    return H
+
+
+def transform_point_to_world(
+    x_normalized: float,
+    y_normalized: float,
+    H: np.ndarray,
+    image_width: int,
+    image_height: int
+) -> Tuple[float, float]:
+    """
+    Transform a normalized image coordinate to world coordinates using homography.
+
+    Args:
+        x_normalized: X coordinate in normalized image space (0-1)
+        y_normalized: Y coordinate in normalized image space (0-1)
+        H: Homography matrix from create_perspective_transform()
+        image_width: Image width in pixels
+        image_height: Image height in pixels
+
+    Returns:
+        Tuple of (x_cm, y_cm) in world coordinates (backdrop coordinate system)
+    """
+    # Convert normalized to pixel coordinates
+    x_px = x_normalized * image_width
+    y_px = y_normalized * image_height
+
+    # Apply perspective transform
+    point_world = cv2.perspectiveTransform(
+        np.array([[[x_px, y_px]]], dtype=np.float32),
+        H
+    )[0][0]
+
+    return float(point_world[0]), float(point_world[1])
+
+
 def get_image_dimensions(image_path: str) -> Tuple[int, int]:
     """
     Extract image dimensions from an image file.
@@ -65,6 +136,9 @@ def calculate_vertical_distance(
 
     Used for measurements that are purely vertical (height, hair length).
 
+    LEGACY METHOD: This uses simple scaling and doesn't account for perspective.
+    For more accurate measurements, use calculate_vertical_distance_perspective().
+
     Args:
         y1: First y-coordinate (normalized, 0-1 range)
         y2: Second y-coordinate (normalized, 0-1 range)
@@ -74,6 +148,48 @@ def calculate_vertical_distance(
         Distance in centimeters
     """
     return abs(y2 - y1) * cm_per_normalized_unit
+
+
+def calculate_vertical_distance_perspective(
+    y1: float,
+    y2: float,
+    x: float,
+    calibration_data: Dict,
+    image_width: int,
+    image_height: int
+) -> Optional[float]:
+    """
+    Calculate vertical distance with perspective correction.
+
+    This method transforms coordinates to real-world backdrop space,
+    correcting for perspective distortion and camera angle. This is
+    significantly more accurate than simple scaling, especially when
+    the floor is visible in the image.
+
+    Args:
+        y1: First y-coordinate (normalized, 0-1 range)
+        y2: Second y-coordinate (normalized, 0-1 range)
+        x: X-coordinate for both points (normalized, 0-1 range)
+        calibration_data: Full calibration data with backdrop_corners
+        image_width: Image width in pixels
+        image_height: Image height in pixels
+
+    Returns:
+        Distance in centimeters, or None if perspective transform unavailable
+    """
+    # Create perspective transform
+    H = create_perspective_transform(calibration_data)
+    if H is None:
+        return None
+
+    # Transform both points to world coordinates
+    x1_world, y1_world = transform_point_to_world(x, y1, H, image_width, image_height)
+    x2_world, y2_world = transform_point_to_world(x, y2, H, image_width, image_height)
+
+    # Calculate vertical distance in world coordinates (cm)
+    vertical_distance_cm = abs(y2_world - y1_world)
+
+    return vertical_distance_cm
 
 
 def calculate_2d_distance(
@@ -119,15 +235,21 @@ def calculate_2d_distance(
 def extract_height(
     body_data: Dict,
     calibration_data: Dict,
-    image_path: str
+    image_path: str,
+    pose_data: Optional[Dict] = None
 ) -> Optional[float]:
     """
-    Extract height measurement from body detection data.
+    Extract height measurement from body detection data with perspective correction.
+
+    This function now uses perspective transformation to correct for camera angle
+    and floor inclusion. It prefers pose ankle landmarks over segmentation bottom
+    to avoid measuring to the floor.
 
     Args:
         body_data: Body detection data containing height information
-        calibration_data: Calibration data with cm_per_normalized_unit
-        image_path: Path to the image (for reference, not used for vertical measurements)
+        calibration_data: Calibration data with backdrop_corners and cm_per_normalized_unit
+        image_path: Path to the image (needed for dimensions)
+        pose_data: Optional pose detection data with ankle landmarks for feet position
 
     Returns:
         Height in centimeters, or None if data is invalid
@@ -135,13 +257,54 @@ def extract_height(
     try:
         height_info = body_data.get('height', {})
         y_top = height_info.get('top', {}).get('y')
-        y_bottom = height_info.get('bottom', {}).get('y')
+        y_bottom_seg = height_info.get('bottom', {}).get('y')
 
-        if y_top is None or y_bottom is None:
+        if y_top is None or y_bottom_seg is None:
             return None
 
-        cm_per_normalized_unit = calibration_data['calibration_data']['cm_per_normalized_unit']
+        # Try to get more accurate foot position from pose ankles (landmarks 27, 28)
+        y_bottom = y_bottom_seg  # Default to segmentation
+        x_bottom = 0.5  # Default to center
 
+        if pose_data and 'lower_leg_length' in pose_data:
+            # Get ankle landmarks (more accurate than segmentation bottom)
+            left_ankle = pose_data['lower_leg_length'].get('left', {}).get('landmark_27')
+            right_ankle = pose_data['lower_leg_length'].get('right', {}).get('landmark_28')
+
+            if left_ankle and right_ankle:
+                # Use average of both ankles for more robust measurement
+                y_bottom = (left_ankle['y'] + right_ankle['y']) / 2
+                x_bottom = (left_ankle['x'] + right_ankle['x']) / 2
+                print(f"  Using pose ankle landmarks for feet position (y={y_bottom:.4f})")
+                print(f"  Segmentation bottom was at y={y_bottom_seg:.4f} (floor included)")
+            else:
+                print(f"  WARNING: Ankle landmarks incomplete, using segmentation bottom")
+        else:
+            print(f"  WARNING: No pose data, using segmentation bottom (may include floor)")
+
+        # Get x-coordinate for top
+        x_top = height_info.get('top', {}).get('x', 0.5)
+        x_avg = (x_top + x_bottom) / 2
+
+        # Try to use perspective-corrected method
+        if 'backdrop_corners' in calibration_data:
+            # Get image dimensions
+            image_width, image_height = get_image_dimensions(image_path)
+
+            # Calculate with perspective correction
+            height_perspective = calculate_vertical_distance_perspective(
+                y_top, y_bottom, x_avg,
+                calibration_data,
+                image_width, image_height
+            )
+
+            if height_perspective is not None:
+                print(f"  Using perspective-corrected height: {height_perspective:.2f} cm")
+                return height_perspective
+
+        # Fallback to legacy method if perspective correction unavailable
+        print(f"  WARNING: Using legacy height calculation (no perspective correction)")
+        cm_per_normalized_unit = calibration_data['calibration_data']['cm_per_normalized_unit']
         return calculate_vertical_distance(y_top, y_bottom, cm_per_normalized_unit)
 
     except (KeyError, TypeError) as e:
