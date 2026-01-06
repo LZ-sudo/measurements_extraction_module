@@ -3,3 +3,4 @@ input_images/
 outputs/
 reference_code/
 __pycache__/
+camera_calibration_inputs/

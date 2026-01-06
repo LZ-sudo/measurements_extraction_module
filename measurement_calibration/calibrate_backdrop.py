@@ -58,7 +58,8 @@ class PerspectiveBackdropCalibrator:
         self,
         tesseract_cmd: str = r"C:\Program Files\Tesseract-OCR\tesseract.exe",
         debug: bool = False,
-        visualization_dir: Optional[str] = None
+        visualization_dir: Optional[str] = None,
+        camera_calibration_path: Optional[str] = None
     ):
         """
         Initialize calibrator.
@@ -69,6 +70,8 @@ class PerspectiveBackdropCalibrator:
             tesseract_cmd: Path to Tesseract executable
             debug: Enable debug output
             visualization_dir: Directory to save visualization images
+            camera_calibration_path: Optional path to camera calibration JSON file.
+                                    If provided, images will be undistorted before processing.
         """
         # Load configuration from config module
         self.expected_lines = config.EXPECTED_LINES
@@ -82,6 +85,14 @@ class PerspectiveBackdropCalibrator:
 
         if visualization_dir:
             Path(visualization_dir).mkdir(parents=True, exist_ok=True)
+
+        # Load camera calibration if provided
+        self.camera_calibrator = None
+        if camera_calibration_path:
+            self.camera_calibrator = CameraCalibrator()
+            self.camera_calibrator.load_calibration(camera_calibration_path)
+            if self.debug:
+                print(f"Loaded camera calibration from: {camera_calibration_path}")
 
     def detect_backdrop_region(self, image: np.ndarray) -> Optional[np.ndarray]:
         """
@@ -332,6 +343,29 @@ class PerspectiveBackdropCalibrator:
         Returns:
             Calibration result dictionary
         """
+        if self.debug:
+            print("="*70)
+            print("BACKDROP CALIBRATION PIPELINE")
+            print("="*70)
+            print()
+
+        # Stage 0: Apply camera calibration (undistortion) if available
+        if self.camera_calibrator is not None:
+            if self.debug:
+                print("Stage 0: Applying camera undistortion...")
+
+            image = self.camera_calibrator.undistort_image(image)
+
+            if self.debug:
+                print("  [OK] Image undistorted using camera calibration")
+                print()
+        else:
+            if self.debug:
+                print("WARNING: No camera calibration provided")
+                print("  Lens distortion may cause measurement inaccuracies")
+                print("  For best results, run camera calibration first")
+                print()
+
         # Store original image dimensions - calibration MUST be relative to full image
         h_original, w_original = image.shape[:2]
 
@@ -340,7 +374,7 @@ class PerspectiveBackdropCalibrator:
             print("PERSPECTIVE-AWARE CALIBRATION")
             print("="*70)
             print(f"Target: {self.expected_lines} lines, {self.expected_numbers} numbers")
-            print(f"Original image: {w_original}x{h_original}")
+            print(f"Image dimensions: {w_original}x{h_original}")
             print()
 
         # Stage 1: Detect backdrop region (defines ROI in original image)
@@ -539,6 +573,7 @@ def calibrate_backdrop(
     output_calibration_path: Optional[str] = None,
     visualization_dir: Optional[str] = None,
     tesseract_cmd: str = r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+    camera_calibration_path: Optional[str] = None,
     debug: bool = False
 ) -> Dict:
     """
@@ -551,6 +586,8 @@ def calibrate_backdrop(
         output_calibration_path: Optional path to save calibration data
         visualization_dir: Optional directory to save visualization images
         tesseract_cmd: Path to Tesseract executable
+        camera_calibration_path: Optional path to camera calibration JSON file.
+                                If provided, image will be undistorted before processing.
         debug: Print debug information
 
     Returns:
@@ -565,7 +602,8 @@ def calibrate_backdrop(
     calibrator = PerspectiveBackdropCalibrator(
         tesseract_cmd,
         debug,
-        visualization_dir
+        visualization_dir,
+        camera_calibration_path
     )
     result = calibrator.calibrate(image)
 
@@ -604,6 +642,11 @@ if __name__ == "__main__":
         help="Path to Tesseract executable"
     )
     parser.add_argument(
+        "--camera-calibration",
+        type=str,
+        help="Path to camera calibration JSON file (for lens distortion correction)"
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Enable debug output"
@@ -617,6 +660,7 @@ if __name__ == "__main__":
         args.calibration_output,
         args.visualization_dir,
         args.tesseract_cmd,
+        args.camera_calibration,
         debug=args.debug
     )
 
