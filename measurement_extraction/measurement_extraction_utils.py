@@ -16,9 +16,75 @@ Key concepts:
 
 import cv2
 import numpy as np
+import os
+import tempfile
 from typing import Dict, Tuple, Optional, List
 from pathlib import Path
 
+
+# ============================================================================
+# IMAGE PREPARATION UTILITIES
+# ============================================================================
+
+def prepare_image_for_measurement(
+    image_path: str,
+    camera_calibrator=None
+) -> Tuple[str, Optional[str]]:
+    """
+    Prepare image for measurement extraction.
+
+    If camera calibration is provided, undistorts the image and saves to temporary file.
+    Otherwise returns the original image path.
+
+    Args:
+        image_path: Path to original image
+        camera_calibrator: Optional CameraCalibrator instance for undistortion
+
+    Returns:
+        Tuple of (path_to_use, temp_path_to_cleanup):
+            - path_to_use: Path to the image to use for detections
+            - temp_path_to_cleanup: Path to temporary file (None if no temp file created)
+    """
+    if camera_calibrator is None:
+        return image_path, None
+
+    # Load and undistort image
+    print("\nUndistorting image using camera calibration...")
+    image = cv2.imread(image_path)
+    if image is None:
+        raise ValueError(f"Could not read image from {image_path}")
+
+    undistorted = camera_calibrator.undistort_image(image)
+
+    # Save to temporary file
+    temp_dir = tempfile.gettempdir()
+    image_name = Path(image_path).stem
+    temp_path = os.path.join(temp_dir, f"{image_name}_undistorted.jpg")
+
+    cv2.imwrite(temp_path, undistorted)
+    print(f"Undistorted image saved to: {temp_path}")
+
+    return temp_path, temp_path
+
+
+def cleanup_temporary_image(temp_image_path: Optional[str]):
+    """
+    Clean up temporary undistorted image file.
+
+    Args:
+        temp_image_path: Path to temporary file to remove (can be None)
+    """
+    if temp_image_path and os.path.exists(temp_image_path):
+        try:
+            os.remove(temp_image_path)
+            print(f"\nCleaned up temporary undistorted image")
+        except Exception as e:
+            print(f"\nWarning: Could not remove temporary file {temp_image_path}: {e}")
+
+
+# ============================================================================
+# PERSPECTIVE TRANSFORMATION UTILITIES
+# ============================================================================
 
 def create_perspective_transform(calibration_data: Dict) -> Optional[np.ndarray]:
     """
@@ -241,15 +307,14 @@ def extract_height(
     """
     Extract height measurement from body detection data with perspective correction.
 
-    This function now uses perspective transformation to correct for camera angle
-    and floor inclusion. It prefers pose ankle landmarks over segmentation bottom
-    to avoid measuring to the floor.
+    Uses body segmentation for the top (head) and pose heel landmarks for the bottom (feet).
+    This hybrid approach avoids including floor in the measurement while maintaining accuracy.
 
     Args:
         body_data: Body detection data containing height information
         calibration_data: Calibration data with backdrop_corners and cm_per_normalized_unit
         image_path: Path to the image (needed for dimensions)
-        pose_data: Optional pose detection data with ankle landmarks for feet position
+        pose_data: Optional pose detection data with heel landmarks for feet position
 
     Returns:
         Height in centimeters, or None if data is invalid
@@ -262,29 +327,32 @@ def extract_height(
         if y_top is None or y_bottom_seg is None:
             return None
 
-        # Try to get more accurate foot position from pose ankles (landmarks 27, 28)
-        y_bottom = y_bottom_seg  # Default to segmentation
-        x_bottom = 0.5  # Default to center
+        # Use segmentation bottom as default, but prefer heel landmarks if available
+        y_bottom = y_bottom_seg
+        x_bottom = height_info.get('bottom', {}).get('x', 0.5)
 
-        if pose_data and 'lower_leg_length' in pose_data:
-            # Get ankle landmarks (more accurate than segmentation bottom)
-            left_ankle = pose_data['lower_leg_length'].get('left', {}).get('landmark_27')
-            right_ankle = pose_data['lower_leg_length'].get('right', {}).get('landmark_28')
+        # Try to get more accurate foot position from pose heel landmarks
+        if pose_data and 'heel_landmarks' in pose_data:
+            heel_data = pose_data['heel_landmarks']
+            left_heel = heel_data.get('left')
+            right_heel = heel_data.get('right')
 
-            if left_ankle and right_ankle:
-                # Use average of both ankles for more robust measurement
-                y_bottom = (left_ankle['y'] + right_ankle['y']) / 2
-                x_bottom = (left_ankle['x'] + right_ankle['x']) / 2
-                print(f"  Using pose ankle landmarks for feet position (y={y_bottom:.4f})")
-                print(f"  Segmentation bottom was at y={y_bottom_seg:.4f} (floor included)")
+            if left_heel and right_heel:
+                # Use average of both heels for more robust measurement
+                y_bottom = (left_heel['y'] + right_heel['y']) / 2
+                x_bottom = (left_heel['x'] + right_heel['x']) / 2
+                print(f"  Using pose heel landmarks for feet position (y={y_bottom:.4f})")
+                print(f"  Segmentation bottom was at y={y_bottom_seg:.4f}")
             else:
-                print(f"  WARNING: Ankle landmarks incomplete, using segmentation bottom")
+                print(f"  WARNING: Heel landmarks incomplete, using segmentation bottom")
         else:
-            print(f"  WARNING: No pose data, using segmentation bottom (may include floor)")
+            print(f"  WARNING: No heel landmarks available, using segmentation bottom")
 
         # Get x-coordinate for top
         x_top = height_info.get('top', {}).get('x', 0.5)
         x_avg = (x_top + x_bottom) / 2
+
+        print(f"  Height measurement from y_top={y_top:.4f} to y_bottom={y_bottom:.4f}")
 
         # Try to use perspective-corrected method
         if 'backdrop_corners' in calibration_data:

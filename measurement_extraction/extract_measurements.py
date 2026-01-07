@@ -33,8 +33,13 @@ from measurement_extraction.measurement_extraction_utils import (
     extract_hair_length,
     extract_pose_measurements,
     extract_hand_measurements,
-    extract_neck_length
+    extract_neck_length,
+    prepare_image_for_measurement,
+    cleanup_temporary_image
 )
+
+# Import camera calibration
+from measurement_calibration.camera_calibration import CameraCalibrator
 
 
 class MeasurementExtractor:
@@ -47,7 +52,8 @@ class MeasurementExtractor:
         image_path: str,
         calibration_path: str,
         output_dir: Optional[str] = None,
-        save_intermediates: bool = False
+        save_intermediates: bool = False,
+        camera_calibration_path: Optional[str] = None
     ):
         """
         Initialize the measurement extractor.
@@ -57,9 +63,11 @@ class MeasurementExtractor:
             calibration_path: Path to calibration JSON file
             output_dir: Directory to save output files (default: same as image)
             save_intermediates: Whether to save intermediate landmark JSON files
+            camera_calibration_path: Optional path to camera calibration JSON for undistortion
         """
         self.image_path = image_path
         self.calibration_path = calibration_path
+        self.camera_calibration_path = camera_calibration_path
 
         # Set output directory
         if output_dir is None:
@@ -81,15 +89,27 @@ class MeasurementExtractor:
         if self.calibration_data['calibration_data'].get('cm_per_normalized_unit') is None:
             raise ValueError("Invalid calibration data: cm_per_normalized_unit is None")
 
+        # Load camera calibration if provided
+        self.camera_calibrator = None
+        self.temp_image_path = None
+        if camera_calibration_path:
+            self.camera_calibrator = CameraCalibrator()
+            self.camera_calibrator.load_calibration(camera_calibration_path)
+            print(f"Loaded camera calibration from: {camera_calibration_path}")
+            print("Image will be undistorted before measurement extraction")
+
     def _get_intermediate_path(self, name: str) -> Optional[str]:
         """Get path for intermediate JSON file if saving intermediates."""
         if self.save_intermediates:
             return os.path.join(self.output_dir, f"{name}.json")
         return None
 
-    def run_detections(self) -> Dict:
+    def run_detections(self, image_path: str) -> Dict:
         """
         Run all MediaPipe detection scripts and collect landmark data.
+
+        Args:
+            image_path: Path to the image to process (original or undistorted)
 
         Returns:
             Dictionary containing all detection results
@@ -103,7 +123,7 @@ class MeasurementExtractor:
         try:
             body_output = self._get_intermediate_path("body_detection")
             detections['body'] = segment_body(
-                self.image_path,
+                image_path,
                 output_path=body_output
             )
             print(f"     Body segmentation complete")
@@ -116,7 +136,7 @@ class MeasurementExtractor:
         try:
             hair_output = self._get_intermediate_path("hair_segmentation")
             detections['hair'] = segment_hair(
-                self.image_path,
+                image_path,
                 output_path=hair_output,
                 use_face_detection=True
             )
@@ -126,11 +146,11 @@ class MeasurementExtractor:
             detections['hair'] = {}
 
         # 3. Pose detection (for body measurements)
-        print("   Pose detection...")
+        print("  - Pose detection...")
         try:
             pose_output = self._get_intermediate_path("pose_detection")
             detections['pose'] = detect_pose(
-                self.image_path,
+                image_path,
                 output_path=pose_output
             )
             print(f"     Pose detection complete")
@@ -143,7 +163,7 @@ class MeasurementExtractor:
         try:
             hand_output = self._get_intermediate_path("hand_detection")
             detections['hands'] = detect_hands(
-                self.image_path,
+                image_path,
                 output_path=hand_output,
                 num_hands=2
             )
@@ -295,24 +315,37 @@ class MeasurementExtractor:
         print("="*70)
         print(f"Input image: {self.image_path}")
         print(f"Calibration: {self.calibration_path}")
+        if self.camera_calibration_path:
+            print(f"Camera calibration: {self.camera_calibration_path}")
         print(f"Output directory: {self.output_dir}")
         print()
 
-        # Step 1: Run detections
-        detections = self.run_detections()
+        try:
+            # Step 0: Prepare image (undistort if camera calibration provided)
+            image_to_process, self.temp_image_path = prepare_image_for_measurement(
+                self.image_path,
+                self.camera_calibrator
+            )
 
-        # Step 2: Extract measurements
-        measurements = self.extract_measurements(detections)
+            # Step 1: Run detections
+            detections = self.run_detections(image_to_process)
 
-        # Step 3: Save outputs
-        output_paths = self.save_outputs(measurements, output_prefix)
+            # Step 2: Extract measurements
+            measurements = self.extract_measurements(detections)
 
-        print()
-        print("="*70)
-        print("EXTRACTION COMPLETE")
-        print("="*70)
+            # Step 3: Save outputs
+            output_paths = self.save_outputs(measurements, output_prefix)
 
-        return output_paths
+            print()
+            print("="*70)
+            print("EXTRACTION COMPLETE")
+            print("="*70)
+
+            return output_paths
+
+        finally:
+            # Always clean up temporary files
+            cleanup_temporary_image(self.temp_image_path)
 
 
 def extract_measurements(
@@ -320,7 +353,8 @@ def extract_measurements(
     calibration_path: str,
     output_dir: Optional[str] = None,
     output_prefix: Optional[str] = None,
-    save_intermediates: bool = False
+    save_intermediates: bool = False,
+    camera_calibration_path: Optional[str] = None
 ) -> tuple:
     """
     Convenience function to run measurement extraction pipeline.
@@ -331,6 +365,7 @@ def extract_measurements(
         output_dir: Directory to save outputs (default: same as image)
         output_prefix: Prefix for output filenames (default: image filename)
         save_intermediates: Whether to save intermediate landmark JSONs
+        camera_calibration_path: Optional path to camera calibration JSON for undistortion
 
     Returns:
         Tuple of (body_measurements_path, hair_measurements_path)
@@ -339,7 +374,8 @@ def extract_measurements(
         image_path,
         calibration_path,
         output_dir,
-        save_intermediates
+        save_intermediates,
+        camera_calibration_path
     )
     return extractor.run(output_prefix)
 
@@ -369,6 +405,11 @@ if __name__ == "__main__":
         help="Prefix for output filenames (default: input image filename)"
     )
     parser.add_argument(
+        "--camera-calibration",
+        type=str,
+        help="Path to camera calibration JSON file (for lens distortion correction)"
+    )
+    parser.add_argument(
         "--save-intermediates",
         action="store_true",
         help="Save intermediate landmark detection JSON files"
@@ -383,7 +424,8 @@ if __name__ == "__main__":
             args.calibration,
             args.output_dir,
             args.prefix,
-            args.save_intermediates
+            args.save_intermediates,
+            args.camera_calibration
         )
     except Exception as e:
         print(f"\nError: {e}")

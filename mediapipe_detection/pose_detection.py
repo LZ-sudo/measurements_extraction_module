@@ -247,6 +247,12 @@ class PoseDetector:
                 }
             }
 
+            # Heel landmarks (29, 30) for accurate height measurement
+            landmark_pairs["heel_landmarks"] = {
+                "left": get_landmark_coords(29),   # Left heel
+                "right": get_landmark_coords(30)   # Right heel
+            }
+
         return landmark_pairs
 
     def close(self):
