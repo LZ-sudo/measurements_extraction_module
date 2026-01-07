@@ -59,13 +59,14 @@ def create_a4_marker_sheet(output_path="aruco_markers_for_backdrop.pdf",
     Layout automatically adjusts based on marker size:
     - Markers ≤ 11cm: 2 per page (2 pages total)
     - Markers > 11cm: 1 per page (4 pages total)
+    - Maximum marker size: ~20cm (limited by A4 width)
 
-    Space-efficient layout with rotated legend that dynamically positions itself
-    to avoid overlapping with markers.
+    Space-efficient layout with compact legend at bottom right corner.
+    Margins automatically reduce for larger markers to maximize space.
 
     Args:
         output_path: Path to save the PDF file
-        marker_size_cm: Physical size of each marker in cm (default 12.0)
+        marker_size_cm: Physical size of each marker in cm (default 12.0, max ~20.0)
     """
     # Create output directory if needed
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
@@ -77,15 +78,20 @@ def create_a4_marker_sheet(output_path="aruco_markers_for_backdrop.pdf",
     # This ensures the printed marker matches the specified physical size
     marker_size = cm_to_points(marker_size_cm) * MARKER_SCALE_CORRECTION
 
-    # Printer safe margins (most printers can't print to edge)
-    safe_margin = mm_to_points(5)  # Reduced from 15mm to save space
+    # Adjust margins based on marker size - use minimal margins for large markers
+    if marker_size_cm >= 15.0:
+        safe_margin = mm_to_points(2)  # Minimal margin for very large markers (15-20cm)
+    elif marker_size_cm >= 12.0:
+        safe_margin = mm_to_points(3)  # Reduced margin for large markers (12-15cm)
+    else:
+        safe_margin = mm_to_points(5)  # Standard margin for smaller markers
 
     # Calculate printable area
     printable_width = page_width - 2 * safe_margin
 
-    # Check if marker fits in printable area
-    if marker_size > printable_width - mm_to_points(30):  # Account for legend on right
-        raise ValueError(f"Marker size {marker_size_cm}cm is too large for A4 page")
+    # Check if marker fits in printable area (legend is at bottom, only needs 15mm on right)
+    if marker_size > printable_width - mm_to_points(15):  # Account for compact legend at bottom
+        raise ValueError(f"Marker size {marker_size_cm}cm is too large for A4 page (max ~20cm)")
 
     # Automatically choose layout based on marker size
     if marker_size_cm > 11.0:
@@ -205,8 +211,9 @@ def create_a4_marker_sheet(output_path="aruco_markers_for_backdrop.pdf",
     print(f"{'='*70}")
     print("LAYOUT")
     print(f"{'='*70}")
-    print(f"• Markers: Left side ({markers_per_page_text})")
-    print("• Legend: Bottom right corner, rotated 90° (placement guide)")
+    print(f"• Markers: Centered ({markers_per_page_text})")
+    print("• Legend: Bottom right corner (compact, rotated 90°)")
+    print(f"• Margins: {safe_margin / mm_to_points(1):.1f}mm (optimized for {marker_size_cm}cm markers)")
     print("• Page #: Top right corner")
     print()
     print("BACKDROP PLACEMENT:")
@@ -256,104 +263,58 @@ def add_vertical_ruler(c, page_width, page_height, marker_size_cm, safe_margin):
 
 
 def add_compact_legend(c, page_width, page_height, safe_margin, marker_positions):
-    """Add a compact legend rotated 90° counter-clockwise in bottom right corner.
+    """Add a compact legend at the absolute bottom right corner of the page.
 
-    Dynamically adjusts position to avoid overlapping with markers.
+    Positioned at the very bottom right to avoid interfering with large markers.
 
     Args:
         c: ReportLab canvas
         page_width: Page width in points
         page_height: Page height in points
-        safe_margin: Safe margin in points
-        marker_positions: List of dicts with marker positions {'x', 'y', 'width', 'height'}
+        safe_margin: Safe margin in points (not used, kept for compatibility)
+        marker_positions: Marker positions (not used, kept for compatibility)
     """
 
-    # Legend dimensions
-    legend_width = mm_to_points(20)  # Width when horizontal (becomes height when rotated)
-    legend_height = mm_to_points(40)  # Height when horizontal (becomes width when rotated)
+    # Legend dimensions (horizontal, will be rotated)
+    legend_width_horizontal = mm_to_points(40)  # Width when horizontal
+    legend_height_horizontal = mm_to_points(15)  # Height when horizontal
 
-    # Default position at bottom right corner
-    legend_x = page_width - safe_margin - mm_to_points(5)  # Very close to right edge
-    legend_y = safe_margin  # Start at bottom margin
+    # Position at absolute bottom right corner with minimal margins
+    # When rotated 90° CCW, the legend will extend upward from bottom right
+    margin_from_edge = mm_to_points(2)  # Minimal margin from page edge
 
-    # When rotated 90° counter-clockwise, the legend occupies:
-    # - X range: [legend_x - legend_width, legend_x]
-    # - Y range: [legend_y + legend_height, legend_y + legend_height + legend_height]
-    #   = [legend_y + 40mm, legend_y + 80mm]
-
-    # Calculate legend bounds after rotation
-    legend_left = legend_x - legend_width
-    legend_right = legend_x
-    legend_bottom = legend_y + legend_height  # Starts at 40mm above legend_y
-    legend_top = legend_y + legend_height + legend_height  # Extends another 40mm up
-
-    # Minimum gap between legend and markers
-    min_gap = mm_to_points(10)
-
-    # Check for overlap with any marker and adjust position if needed
-    max_shift_needed = 0
-
-    for marker in marker_positions:
-        marker_left = marker['x']
-        marker_right = marker['x'] + marker['width']
-        marker_bottom = marker['y']
-        marker_top = marker['y'] + marker['height']
-
-        # Check if there's potential X overlap
-        x_overlap = not (legend_right < marker_left or legend_left > marker_right)
-
-        # Check if there's potential Y overlap
-        y_overlap = not (legend_top < marker_bottom or legend_bottom > marker_top)
-
-        # If both X and Y overlap, we need to shift the legend up
-        if x_overlap and y_overlap:
-            # Calculate how much we need to shift up to clear this marker
-            # We want legend_bottom to be at least marker_top + min_gap
-            required_legend_bottom = marker_top + min_gap
-            required_legend_y = required_legend_bottom - legend_height
-            shift_needed = required_legend_y - legend_y
-            max_shift_needed = max(max_shift_needed, shift_needed)
-
-    # Apply the shift if needed
-    if max_shift_needed > 0:
-        legend_y += max_shift_needed
-
-        # Make sure we don't go off the top of the page
-        if legend_y + legend_height + legend_height > page_height - safe_margin:
-            # If we'd go off the page, position from the top instead
-            legend_y = page_height - safe_margin - legend_height - legend_height
+    legend_x = page_width - margin_from_edge
+    legend_y = margin_from_edge
 
     # Save state for rotation
     c.saveState()
 
     # Translate to the legend position and rotate 90° counter-clockwise
-    c.translate(legend_x, legend_y + legend_height)
+    c.translate(legend_x, legend_y)
     c.rotate(90)
 
     # Now draw the legend in the rotated coordinate system
-    # Draw legend box
+    # Draw legend box (after rotation: width becomes height, height becomes width)
     c.setStrokeColor(colors.gray)
     c.setLineWidth(0.5)
-    c.rect(0, 0, legend_height, legend_width, stroke=1, fill=0)
+    c.rect(0, 0, legend_width_horizontal, legend_height_horizontal, stroke=1, fill=0)
 
-    # Legend title
-    c.setFont("Helvetica-Bold", 8)
+    # Legend title - compact to fit smaller box
+    c.setFont("Helvetica-Bold", 7)
     c.setFillColor(colors.black)
-    c.drawString(mm_to_points(2), mm_to_points(16), "Marker Placement:")
+    c.drawString(mm_to_points(2), mm_to_points(11), "Placement:")
 
-    # Legend items
-    c.setFont("Helvetica", 7)
+    # Legend items - compact format
+    c.setFont("Helvetica", 6)
     legend_items = [
-        "ID 0 → Top-Left",
-        "ID 1 → Top-Right",
-        "ID 2 → Bottom-Left",
-        "ID 3 → Bottom-Right"
+        "0:TL  1:TR",
+        "2:BL  3:BR"
     ]
 
-    y_pos = mm_to_points(12)
+    y_pos = mm_to_points(7)
     for item in legend_items:
-        c.drawString(mm_to_points(3), y_pos, item)
-        y_pos -= mm_to_points(3)
+        c.drawString(mm_to_points(2), y_pos, item)
+        y_pos -= mm_to_points(3.5)
 
     # Restore state
     c.restoreState()
