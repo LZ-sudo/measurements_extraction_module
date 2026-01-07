@@ -157,6 +157,10 @@ class PoseDetector:
                 "lower_leg_length": {
                     "left": {"landmark_25": {...}, "landmark_27": {...}},
                     "right": {"landmark_26": {...}, "landmark_28": {...}}
+                },
+                "shoulder_to_waist": {
+                    "left": {"landmark_11": {...}, "landmark_23": {...}},
+                    "right": {"landmark_12": {...}, "landmark_24": {...}}
                 }
             }
         """
@@ -244,6 +248,18 @@ class PoseDetector:
                 "right": {
                     "landmark_26": get_landmark_coords(26),  # Right knee
                     "landmark_28": get_landmark_coords(28)   # Right ankle
+                }
+            }
+
+            # Shoulder to waist: 11 to 23 (left) and 12 to 24 (right)
+            landmark_pairs["shoulder_to_waist"] = {
+                "left": {
+                    "landmark_11": get_landmark_coords(11),  # Left shoulder
+                    "landmark_23": get_landmark_coords(23)   # Left hip
+                },
+                "right": {
+                    "landmark_12": get_landmark_coords(12),  # Right shoulder
+                    "landmark_24": get_landmark_coords(24)   # Right hip
                 }
             }
 

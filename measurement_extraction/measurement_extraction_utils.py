@@ -464,7 +464,8 @@ def extract_pose_measurements(
             'upper_arm_length',
             'forearm_length',
             'upper_leg_length',
-            'lower_leg_length'
+            'lower_leg_length',
+            'shoulder_to_waist'
         ]
 
         for measurement_name in bilateral_measurements:
