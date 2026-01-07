@@ -13,7 +13,8 @@ import cv2
 # ============================================================================
 
 # Default marker size (should match printed marker size in cm)
-DEFAULT_MARKER_SIZE_CM = 9.0
+# 12cm markers recommended for better accuracy (more pixels per marker)
+DEFAULT_MARKER_SIZE_CM = 12.0
 
 # ArUco dictionary type
 # DICT_4X4_50: 4×4 bit markers, 50 unique IDs (IDs 0-49)
