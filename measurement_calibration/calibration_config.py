@@ -75,6 +75,35 @@ MIN_MARKERS_REQUIRED = 4
 MAX_MARKER_VARIATION_FOR_ACCEPTANCE = 0.15  # 15%
 
 # ============================================================================
+# MARKER POSITION CONFIGURATION
+# ============================================================================
+
+# Default physical positions of markers in real-world coordinates (cm)
+# These define where the markers are placed relative to the floor (ground reference)
+#
+# Convention:
+# - Height is measured from floor where person stands (0cm = floor level)
+# - Width is measured from left edge of backdrop
+#
+# Default setup assumes:
+# - Bottom markers at 10cm height from floor
+# - Top markers at 200cm height from floor
+# - Left markers at 0cm horizontal position
+# - Right markers at 200cm horizontal position
+DEFAULT_MARKER_POSITIONS = {
+    "top_left": {"x": 0, "y": 200},      # Marker ID 0
+    "top_right": {"x": 200, "y": 200},   # Marker ID 1
+    "bottom_left": {"x": 0, "y": 10},    # Marker ID 2
+    "bottom_right": {"x": 200, "y": 10}  # Marker ID 3
+}
+
+# Note: If your backdrop is elevated (e.g., 10cm off the ground) and you place
+# markers at the backdrop's "10cm" and "200cm" markings, the actual positions are:
+# - Bottom: 10cm (marking) + 10cm (elevation) = 20cm from floor
+# - Top: 200cm (marking) + 10cm (elevation) = 210cm from floor
+# Update DEFAULT_MARKER_POSITIONS or provide a custom position file accordingly.
+
+# ============================================================================
 # OUTPUT CONFIGURATION
 # ============================================================================
 

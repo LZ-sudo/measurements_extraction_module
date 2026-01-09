@@ -17,9 +17,14 @@ Key concepts:
 import cv2
 import numpy as np
 import os
+import sys
 import tempfile
 from typing import Dict, Tuple, Optional, List
 from pathlib import Path
+
+# Add parent directory to path for config imports
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+from measurement_calibration import calibration_config as config
 
 
 # ============================================================================
@@ -94,7 +99,7 @@ def create_perspective_transform(calibration_data: Dict) -> Optional[np.ndarray]
     correcting for perspective distortion and camera angle.
 
     Args:
-        calibration_data: Calibration data containing backdrop_corners
+        calibration_data: Calibration data containing backdrop_corners and optionally marker_positions
 
     Returns:
         3x3 homography matrix, or None if corners not available
@@ -105,17 +110,17 @@ def create_perspective_transform(calibration_data: Dict) -> Optional[np.ndarray]
     # Detected corners in image (pixels)
     corners_image = np.array(calibration_data['backdrop_corners'], dtype=np.float32)
 
+    # Get physical marker positions from calibration data, or use defaults from config
+    # marker_positions defines where markers are physically placed (in cm from floor)
+    marker_positions = calibration_data.get('marker_positions', config.DEFAULT_MARKER_POSITIONS)
+
     # Corresponding physical positions on backdrop (cm)
-    # Backdrop coordinate system: origin at bottom-left
-    # Top-left corner = (0cm, 200cm) - at 200cm height line
-    # Top-right corner = (200cm, 200cm) - at 200cm height line
-    # Bottom-right corner = (200cm, 10cm) - at 10cm height line
-    # Bottom-left corner = (0cm, 10cm) - at 10cm height line
+    # Order matches backdrop_corners: [top-left, top-right, bottom-right, bottom-left]
     corners_world = np.array([
-        [0, 200],      # Top-left: 200cm height, 0cm from left
-        [200, 200],    # Top-right: 200cm height, 200cm from left
-        [200, 10],     # Bottom-right: 10cm height, 200cm from left
-        [0, 10]        # Bottom-left: 10cm height, 0cm from left
+        [marker_positions['top_left']['x'], marker_positions['top_left']['y']],
+        [marker_positions['top_right']['x'], marker_positions['top_right']['y']],
+        [marker_positions['bottom_right']['x'], marker_positions['bottom_right']['y']],
+        [marker_positions['bottom_left']['x'], marker_positions['bottom_left']['y']]
     ], dtype=np.float32)
 
     # Compute homography matrix
