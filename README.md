@@ -1,40 +1,75 @@
 # Measurements Extraction Module
 
-This module provides tools for extracting body measurements from images using Google's Mediapipe library, computer vision techniques, and OCR. It includes landmark detection, segmentation, and calibration capabilities for anthropometric measurement extraction.
+This module provides tools for extracting body measurements from images using Google's Mediapipe library, ArUco marker-based calibration, and computer vision techniques. It includes landmark detection, segmentation, camera calibration, and robust measurement extraction capabilities for anthropometric analysis.
 
 ## Module Structure
 
 ```
 measurements_extraction_module/
-├── mediapipe_detection/          # Landmark detection and segmentation
-│   ├── pose_detection.py         # Body pose landmarks (33 points)
-│   ├── face_detection.py         # Facial landmarks (478 points)
-│   ├── hand_detection.py         # Hand landmarks (21 points per hand)
-│   ├── hair_segmentation.py      # Hair segmentation with face detection
-│   └── body_segmentation.py      # Full-body segmentation
-├── measurement_extraction/        # Calibration and measurement tools
-│   └── extract_norm_per_cm.py    # Backdrop calibration using OCR
-├── mediapipe_task_files/         # Downloaded Mediapipe models
-├── input_images/                 # Sample input images
-├── outputs/                      # Generated outputs (JSON, images)
-└── requirements.txt              # Python dependencies
+├── .git/                          # Git repository
+├── .gitignore                     # Git ignore patterns
+├── .gitmodules                    # Git submodule configuration
+├── mediapipe_detection/           # Landmark detection and segmentation
+│   ├── pose_detection.py          # Body pose landmarks (33 points)
+│   ├── face_detection.py          # Facial landmarks (478 points)
+│   ├── hand_detection.py          # Hand landmarks (21 points per hand)
+│   ├── hair_segmentation.py       # Hair segmentation with face detection
+│   └── body_segmentation.py       # Full-body segmentation
+├── measurement_calibration/       # ArUco-based calibration system
+│   ├── calibrate_backdrop.py      # ArUco marker backdrop calibration
+│   ├── calibration_utils.py       # Calibration helper functions
+│   ├── calibration_config.py      # Calibration configuration
+│   └── camera_calibration.py      # Camera calibration utilities
+├── measurement_extraction/        # Measurement extraction tools
+│   ├── extract_measurements.py    # Main measurement extraction orchestrator
+│   └── measurement_extraction_utils.py  # Measurement calculation utilities
+├── mediapipe_task_files/          # Downloaded Mediapipe models
+├── input_images/                  # Sample input images
+├── outputs/                       # Generated outputs (JSON, images)
+├── hair_classification_model/     # Hair classification submodule
+├── calibrate_camera.py            # Camera lens calibration script
+├── classify_hair.py               # Hair classification script
+├── complete_measurements.py       # End-to-end measurement pipeline
+├── generate_aruco_markers.py      # Generate printable ArUco markers PDF
+├── marker_positions_example.json  # Example marker position configuration
+├── requirements.txt               # Python dependencies
+└── LICENSE.md                     # License information
 ```
 
 ## Features Overview
 
 ### Landmark Detection
-- **Pose Detection**: 33 body landmarks for measurement extraction
-- **Face Detection**: 478 facial landmarks with high precision
+- **Pose Detection**: 33 body landmarks for comprehensive measurement extraction
 - **Hand Detection**: 21 landmarks per hand with handedness classification
 
 ### Segmentation
 - **Hair Segmentation**: Combined with face detection for accurate hair boundary detection
 - **Body Segmentation**: Full-body isolation using selfie segmenter
 
-### Calibration
-- **Measurement Backdrop Calibration**: Automatic extraction of cm-to-pixel ratio using Tesseract OCR and Hough line detection
+### ArUco Marker-Based Calibration
+- **Robust Backdrop Calibration**: Sub-pixel accurate ArUco marker detection for scale extraction
+- **Multi-Axis Calibration**: Averages horizontal, vertical, and marker-size-based measurements for robustness
+- **Perspective Correction**: Homography-based transformation for accurate height measurement
+- **Camera Calibration**: Optional lens distortion correction using chessboard calibration
+- **Flexible Marker Positioning**: Configurable marker positions for different backdrop setups
+
+### Measurements Extracted
+- **Height**: Full body height from floor to head top
+- **Hair Length**: Vertical hair measurement
+- **Width Measurements**: Head width, shoulder width, hip width
+- **Bilateral Measurements**: Upper/lower arm, upper/lower leg, shoulder-to-waist (averaged left/right)
 
 ## Installation
+
+### 0. Create virtual environment
+
+```bash
+# Create python virtual environment
+python -m venv venv
+
+# Activate python virtual environment
+venv/Scripts/activate
+```
 
 ### 1. Install Python Dependencies
 
@@ -42,460 +77,183 @@ measurements_extraction_module/
 pip install -r requirements.txt
 ```
 
-**Required packages:**
-- `opencv-python>=4.8.0` - Computer vision operations
-- `opencv-contrib-python>=4.8.0` - Extended OpenCV features
-- `numpy>=1.24.0` - Numerical operations
-- `Pillow>=10.0.0` - Image processing
-- `mediapipe==0.10.9` - Google Mediapipe for landmark detection
-- `pytesseract>=0.3.10` - Python wrapper for Tesseract OCR
-- `matplotlib>=3.7.0` - Visualization
-- `scipy>=1.10.0` - Scientific computing
-- `seaborn>=0.12.0` - Statistical visualization
+### 2. Mediapipe Models
 
-### 2. Install Tesseract OCR (Required for Calibration)
-
-**Windows:**
-Download and install Tesseract OCR 5.5.0:
-```
-https://github.com/tesseract-ocr/tesseract/releases/download/5.5.0/tesseract-ocr-w64-setup-5.5.0.20241111.exe
-```
-Default installation path: `C:\Program Files\Tesseract-OCR\tesseract.exe`
-
-**Linux:**
-```bash
-sudo apt-get install tesseract-ocr
-```
-
-**macOS:**
-```bash
-brew install tesseract
-```
-
-### 3. Mediapipe Models
-
-Models are automatically downloaded on first use:
+Models are already included in repo:
 - `pose_landmarker_heavy.task` (~30MB)
 - `face_landmarker.task` (~10MB)
 - `hand_landmarker.task` (~10MB)
+- `hair_segmenter.tflite` (for hair segmentation)
+- `selfie_segmenter.tflite` (for body segmentation)
 
-## Usage
+## Quick Start
 
-### Pose Detection
+### 1. Generate ArUco Markers
 
-Extracts body landmark coordinates for measurement calculations.
+Generate printable ArUco markers for your backdrop:
 
-**Python API:**
-```python
-from mediapipe_detection import PoseDetector
-import cv2
-
-image = cv2.imread('input.jpg')
-detector = PoseDetector()
-landmark_data = detector.detect(image)
-detector.close()
-
-# landmark_data contains:
-# - head_width: landmarks 7, 8 (left/right ear)
-# - shoulder_width: landmarks 11, 12
-# - hip_width: landmarks 23, 24
-# - upper_arm_length: landmarks 11-13 (left), 12-14 (right)
-# - forearm_length: landmarks 13-15 (left), 14-16 (right)
-```
-
-**Command Line:**
 ```bash
-python mediapipe_detection/pose_detection.py input.jpg -o output.json
+# Generate markers sized 16.4cm (default: 12cm)
+python generate_aruco_markers.py -s 16.4 -o aruco_markers.pdf
 ```
 
-### Face Detection
+Print the PDF at 100% scale (no scaling) and attach the 4 markers to your backdrop corners.
 
-Detects 478 facial landmarks for detailed facial measurements.
+### 2. Create Marker Position Configuration
 
-**Python API:**
-```python
-from mediapipe_detection import FaceDetector
-import cv2
+Create a JSON file specifying where you placed the markers (in cm from floor):
 
-image = cv2.imread('input.jpg')
-detector = FaceDetector(num_faces=1)
-face_data = detector.detect(image)
-detector.close()
-```
-
-**Command Line:**
-```bash
-python mediapipe_detection/face_detection.py input.jpg -o output.json --max-faces 1
-```
-
-### Hand Detection
-
-Detects hand landmarks with left/right classification.
-
-**Python API:**
-```python
-from mediapipe_detection import HandDetector
-import cv2
-
-image = cv2.imread('input.jpg')
-detector = HandDetector(num_hands=2)
-hand_data = detector.detect(image)
-detector.close()
-
-# hand_data contains:
-# - hands[].handedness: "Left" or "Right"
-# - hands[].confidence: detection confidence
-# - hands[].hand_length: landmarks 0 (wrist) and 12 (ring finger base)
-```
-
-**Command Line:**
-```bash
-python mediapipe_detection/hand_detection.py input.jpg -o output.json --max-hands 2
-```
-
-### Hair Segmentation
-
-Segments hair region using face detection for improved accuracy.
-
-**Python API:**
-```python
-from mediapipe_detection import HairSegmenter
-import cv2
-
-image = cv2.imread('input.jpg')
-segmenter = HairSegmenter(use_face_detection=True)
-hair_data = segmenter.segment(image)
-segmenter.close()
-
-# hair_data contains:
-# - hair_length.top.y: normalized y-coordinate of hair top
-# - hair_length.bottom.y: normalized y-coordinate of hair bottom
-```
-
-**Command Line:**
-```bash
-python mediapipe_detection/hair_segmentation.py input.jpg -o output.json
-# Use --no-face-detection for close-up head shots
-```
-
-### Body Segmentation
-
-Segments entire body from background for height measurement.
-
-**Python API:**
-```python
-from mediapipe_detection import BodySegmenter
-import cv2
-
-image = cv2.imread('input.jpg')
-segmenter = BodySegmenter()
-height_data = segmenter.segment(image)
-segmenter.close()
-
-# height_data contains:
-# - height.top.y: normalized y-coordinate of body top
-# - height.bottom.y: normalized y-coordinate of body bottom
-```
-
-**Command Line:**
-```bash
-python mediapipe_detection/body_segmentation.py input.jpg -o output.json
-```
-
-### Measurement Backdrop Calibration
-
-Extracts calibration factor from measurement backdrop images to convert normalized coordinates to real-world centimeters.
-
-**Features:**
-- Detects bold horizontal lines (10cm demarcations) using Hough Line Transform
-- Reads measurement numbers (20-220cm) using Tesseract OCR
-- Calculates `cm_per_normalized_unit` conversion factor
-- Provides confidence levels (high/medium/low/failed)
-- Debug mode for troubleshooting detection
-
-**Python API:**
-```python
-from measurement_extraction.extract_norm_per_cm import extract_calibration
-
-calibration_data = extract_calibration(
-    image_path="backdrop.jpg",
-    output_path="calibration.json",
-    tesseract_cmd=r"C:\Program Files\Tesseract-OCR\tesseract.exe",
-    debug=False
-)
-
-# calibration_data contains:
-# - cm_per_normalized_unit: conversion factor
-# - pixels_per_cm: pixel density
-# - detected_lines: number of lines detected
-# - detected_numbers: number of OCR readings
-# - confidence: "high", "medium", "low", or "failed"
-```
-
-**Command Line:**
-```bash
-# Basic usage
-python measurement_extraction/extract_norm_per_cm.py backdrop.jpg -o calibration.json
-
-# With debug output
-python measurement_extraction/extract_norm_per_cm.py backdrop.jpg -o calibration.json --debug
-
-# Custom Tesseract path
-python measurement_extraction/extract_norm_per_cm.py backdrop.jpg -o calibration.json --tesseract-cmd "path/to/tesseract.exe"
-```
-
-**Output Format:**
 ```json
 {
-  "cm_per_normalized_unit": 195.42,
-  "pixels_per_cm": 6.55,
-  "detected_lines": 19,
-  "detected_numbers": 17,
-  "line_spacing_pixels": 65.5,
-  "cm_interval": 10,
-  "confidence": "high"
+  "top_left": {"x": 0, "y": 200},
+  "top_right": {"x": 100, "y": 200},
+  "bottom_left": {"x": 0, "y": 10},
+  "bottom_right": {"x": 100, "y": 10}
 }
 ```
 
-**Calibration Parameters:**
+**Important:** Heights (y values) are measured from the floor where the person stands.
 
-The line detection parameters can be tuned for different backdrop setups in `extract_norm_per_cm.py:47-59`:
+### 3. Run Complete Measurement Pipeline
 
-```python
-# Canny edge detection thresholds
-edges = cv2.Canny(gray, 50, 150, apertureSize=3)
+```bash
+# Basic usage
+python complete_measurements.py subject.jpg -s 16.4 --marker-positions marker_positions.json
 
-# Hough Line Transform parameters
-lines = cv2.HoughLinesP(
-    edges,
-    rho=1,
-    theta=np.pi/180,
-    threshold=106,                    # Higher = only bold lines
-    minLineLength=image.shape[1] * 0.47,  # Minimum line length
-    maxLineGap=25                     # Maximum gap in line
-)
+# With camera calibration for lens distortion correction
+python complete_measurements.py subject.jpg -s 16.4 --marker-positions marker_positions.json --camera-calibration camera_cal.json
+
+# Save all outputs
+python complete_measurements.py subject.jpg -s 16.4 --marker-positions marker_positions.json --camera-calibration camera_cal.json -o measurements.json --save-calibration calibration.json --save-visualization ./visualizations
 ```
 
-## Complete Measurement Pipeline Example
+## Advanced Usage
 
-```python
-import cv2
-import json
-from mediapipe_detection import (
-    PoseDetector, FaceDetector, HandDetector,
-    HairSegmenter, BodySegmenter
-)
-from measurement_extraction.extract_norm_per_cm import extract_calibration
+### Individual Pipeline Steps
 
-# Step 1: Load calibration from backdrop image
-calibration = extract_calibration("backdrop.jpg", "calibration.json")
-cm_per_unit = calibration["cm_per_normalized_unit"]
+If you need more control, run the pipeline steps individually:
 
-# Step 2: Load subject image
-image = cv2.imread('subject.jpg')
-h, w = image.shape[:2]
+#### Step 1: Backdrop Calibration
 
-# Step 3: Extract all measurements
-pose_detector = PoseDetector()
-face_detector = FaceDetector()
-hand_detector = HandDetector()
-hair_segmenter = HairSegmenter()
-body_segmenter = BodySegmenter()
-
-pose_data = pose_detector.detect(image)
-face_data = face_detector.detect(image)
-hand_data = hand_detector.detect(image)
-hair_data = hair_segmenter.segment(image)
-body_data = body_segmenter.segment(image)
-
-# Step 4: Convert normalized coordinates to centimeters
-def normalized_to_cm(normalized_value):
-    return normalized_value * cm_per_unit
-
-# Example: Calculate shoulder width in cm
-if pose_data.get("shoulder_width"):
-    left_shoulder = pose_data["shoulder_width"]["landmark_11"]
-    right_shoulder = pose_data["shoulder_width"]["landmark_12"]
-    shoulder_width_normalized = abs(left_shoulder["x"] - right_shoulder["x"])
-    shoulder_width_cm = shoulder_width_normalized * cm_per_unit
-    print(f"Shoulder width: {shoulder_width_cm:.2f} cm")
-
-# Example: Calculate body height in cm
-if body_data.get("height"):
-    height_normalized = body_data["height"]["bottom"]["y"] - body_data["height"]["top"]["y"]
-    height_cm = height_normalized * cm_per_unit
-    print(f"Body height: {height_cm:.2f} cm")
-
-# Clean up
-pose_detector.close()
-face_detector.close()
-hand_detector.close()
-hair_segmenter.close()
-body_segmenter.close()
+```bash
+# Calibrate using ArUco markers
+python measurement_calibration/calibrate_backdrop.py input.jpg -s 16.4 --marker-positions marker_positions.json -c calibration.json -v ./visualizations
 ```
 
-## Coordinate System
+#### Step 2: Extract Measurements
 
-All landmark and segmentation outputs use **normalized coordinates** (0.0 to 1.0):
-
-- **X-coordinates**: Normalized by image width (0 = left, 1 = right)
-- **Y-coordinates**: Normalized by image height (0 = top, 1 = bottom)
-- **Z-coordinates** (landmarks only): Depth relative to landmark 0, scaled by image width
-
-To convert to real-world measurements:
-```python
-# For distances
-distance_cm = normalized_distance * calibration["cm_per_normalized_unit"]
-
-# For pixel coordinates
-x_pixels = x_normalized * image_width
-y_pixels = y_normalized * image_height
+```bash
+# Extract measurements using calibration
+python measurement_extraction/extract_measurements.py input.jpg calibration.json -o ./outputs --camera-calibration camera_cal.json
 ```
 
-## API Reference
+### Camera Calibration (Optional but Recommended)
 
-### Common Parameters
+For best accuracy, calibrate your camera to correct lens distortion:
 
-All detector classes support:
-- `model_path` (Optional[str]): Path to model file. If None, downloads automatically.
-- `min_detection_confidence` (float): Minimum confidence threshold (0.0-1.0)
-- `min_presence_confidence` (float): Minimum presence confidence (0.0-1.0)
-- `min_tracking_confidence` (float): Minimum tracking confidence (0.0-1.0)
+```bash
+# Capture multiple images of a chessboard pattern (9x6 inner corners)
+python calibrate_camera.py calibrate \
+    ./calibration_images/*.jpg \
+    -o camera_calibration.json \
+    --pattern-size 9x6
 
-### Return Formats
+# Test the calibration
+python calibrate_camera.py test \
+    camera_calibration.json \
+    test_image.jpg \
+    -o undistorted.jpg
+```
 
-**Pose Detection:**
-```python
+## Configuration
+
+### Marker Positions
+
+The `marker_positions.json` file is **required** and defines the physical layout of your ArUco markers:
+
+```json
 {
-  "head_width": {
-    "landmark_7": {"x": float, "y": float, "z": float},
-    "landmark_8": {"x": float, "y": float, "z": float}
-  },
-  "shoulder_width": {...},
-  "hip_width": {...},
-  "upper_arm_length": {
-    "left": {"landmark_11": {...}, "landmark_13": {...}},
-    "right": {"landmark_12": {...}, "landmark_14": {...}}
-  },
-  "forearm_length": {...}
+  "top_left": {"x": 0, "y": 210},      // Marker ID 0 (x, y in cm from floor)
+  "top_right": {"x": 100, "y": 210},   // Marker ID 1
+  "bottom_left": {"x": 0, "y": 20},    // Marker ID 2
+  "bottom_right": {"x": 100, "y": 20}  // Marker ID 3
 }
 ```
 
-**Hand Detection:**
-```python
-{
-  "hands": [
-    {
-      "handedness": "Left" or "Right",
-      "confidence": float,
-      "hand_length": {
-        "landmark_0": {"x": float, "y": float, "z": float},
-        "landmark_12": {"x": float, "y": float, "z": float}
-      }
-    }
-  ]
-}
-```
+**Key Points:**
+- `x`: Horizontal position in cm (0 = left edge)
+- `y`: Vertical height in cm from floor (0 = floor level)
+- Heights must account for backdrop elevation (e.g., if backdrop is 10cm off floor, add 10cm to all y values)
+- Use actual positions where marker **centers** are located
 
-**Segmentation (Hair/Body):**
-```python
+See [marker_positions_example.json](marker_positions_example.json) for a detailed example.
+
+### Default Configuration
+
+Edit [measurement_calibration/calibration_config.py](measurement_calibration/calibration_config.py) to change:
+- `DEFAULT_MARKER_SIZE_CM` - Default marker size
+- `DEFAULT_MARKER_POSITIONS` - Default marker layout
+- `ARUCO_DICT_TYPE` - ArUco dictionary type
+- Confidence thresholds and visualization settings
+
+## Output Files
+
+### Measurements JSON
+
+Body measurements (`*_body_measurements.json`):
+```json
 {
-  "hair_length" or "height": {
-    "top": {"y": float},
-    "bottom": {"y": float}
+  "measurements": {
+    "height_cm": 170.21,
+    "head_width_cm": 13.23,
+    "shoulder_width_cm": 35.96,
+    "hip_width_cm": 21.60,
+    "upper_arm_length_cm": 28.71,
+    "forearm_length_cm": 27.19,
+    "upper_leg_length_cm": 41.04,
+    "lower_leg_length_cm": 34.42,
+    "shoulder_to_waist_cm": 57.59,
+    "hand_length_cm": 14.79
   }
 }
 ```
 
-## Best Practices
+Hair measurements (`*_hair_measurements.json`):
+```json
+{
+  "hair_measurement": {
+    "height_length_cm": 25.3
+  }
+}
+```
 
-1. **Image Quality**:
-   - Use well-lit images with clear subject visibility
-   - Avoid shadows on measurement backdrop
-   - Ensure subject stands straight against backdrop
+### Calibration JSON
 
-2. **Calibration**:
-   - Capture backdrop calibration image at the same distance as subject photos
-   - Ensure bold measurement lines are clearly visible
-   - Use debug mode to verify line and number detection
+Contains detailed calibration data including:
+- `pixels_per_cm` - Average scale from 3 methods (marker size, horizontal distance, vertical distance)
+- `backdrop_corners` - Detected marker center positions
+- `marker_positions` - Physical marker layout used
+- Individual calibration method breakdowns for validation
 
-3. **Pose Detection**:
-   - Subject should face camera directly for width measurements
-   - Keep arms slightly away from body for better detection
-   - Use T-pose or A-pose for most reliable results
-
-4. **Hair Segmentation**:
-   - Enable face detection for full-body images (default)
-   - Disable face detection only for close-up head shots
-   - Ensure hair contrasts with background
-
-5. **Error Handling**:
-   - Check for None/empty returns from detection methods
-   - Validate calibration confidence before using measurements
-   - Use try-except blocks for file I/O operations
 
 ## Troubleshooting
 
-### Tesseract OCR Not Found
-```
-Error: Tesseract executable not found
-```
-**Solution**: Install Tesseract OCR and specify path:
-```python
-calibration = extract_calibration(
-    "backdrop.jpg",
-    tesseract_cmd=r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-)
-```
+### Height measurements differ between marker sizes
+- Ensure `marker_positions.json` accurately reflects where marker **centers** are located
+- Larger markers have centers further from edges: (marker_size / 2) offset
+- Account for backdrop elevation if mounted off the floor
 
-### Low Line Detection
-```
-Calibration failed: Not enough lines detected
-```
-**Solution**:
-- Increase edge detection sensitivity by lowering Canny thresholds
-- Reduce `threshold` parameter in HoughLinesP
-- Use debug mode to visualize detected lines
+### ArUco markers not detected
+- Ensure markers are flat, well-lit, and in focus
+- Check that marker size matches what you specified (`-s` parameter)
+- Verify markers are from DICT_4X4_50 dictionary
+- Use `--debug` flag to see detailed detection information
 
-### Poor Number Recognition
-```
-detected_numbers: 0 or very few
-```
-**Solution**:
-- Ensure numbers are clearly visible and high contrast
-- Check Tesseract installation
-- Use `--debug` flag to see OCR output
-- Verify image quality and lighting
-
-### No Landmarks Detected
-```
-pose_data: {}
-```
-**Solution**:
-- Verify subject is fully visible in frame
-- Check image format (should be BGR from OpenCV)
-- Lower confidence thresholds
-- Ensure adequate lighting
-
-## Technical Details
-
-### Mediapipe API Version
-This module uses the Mediapipe Tasks API (mediapipe>=0.10.0):
-- `mediapipe.tasks.python.vision` for vision tasks
-- Automatic model management and downloading
-- Compatible with latest Mediapipe releases
-
-### Image Format
-- **Input**: BGR format (OpenCV default)
-- **Internal processing**: Converted to RGB for Mediapipe
-- **Output**: JSON format with normalized coordinates
-
-### Performance
-- **Pose Detection**: ~100-200ms per image (CPU)
-- **Face Detection**: ~50-100ms per image (CPU)
-- **Hand Detection**: ~50-100ms per image (CPU)
-- **Segmentation**: ~200-400ms per image (CPU)
-- **Calibration**: ~1-2s per image (CPU)
+### Measurements seem inaccurate
+- Use camera calibration to correct lens distortion (especially for wide-angle cameras)
+- Verify marker positions match physical setup
+- Check calibration confidence (should be "high")
+- With `--debug`, verify all 3 calibration methods give similar `pixels_per_cm` values
 
 ## References
 
@@ -503,8 +261,9 @@ This module uses the Mediapipe Tasks API (mediapipe>=0.10.0):
 - [Mediapipe Face Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker/python)
 - [Mediapipe Hand Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/hand_landmarker/python)
 - [Mediapipe Image Segmentation](https://ai.google.dev/edge/mediapipe/solutions/vision/image_segmenter)
-- [OpenCV Hough Line Transform](https://docs.opencv.org/4.x/d9/db0/tutorial_hough_lines.html)
-- [Tesseract OCR](https://github.com/tesseract-ocr/tesseract)
+- [OpenCV ArUco Marker Detection](https://docs.opencv.org/4.x/d5/dae/tutorial_aruco_detection.html)
+- [Camera Calibration with OpenCV](https://docs.opencv.org/4.x/dc/dbb/tutorial_py_calibration.html)
+- [Perspective Transformation (Homography)](https://docs.opencv.org/4.x/d9/dab/tutorial_homography.html)
 
 ## License
 

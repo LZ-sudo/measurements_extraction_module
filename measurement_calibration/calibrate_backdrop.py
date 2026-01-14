@@ -201,7 +201,8 @@ class ArUcoBackdropCalibrator:
         calibration_data = calculate_calibration_from_markers(
             marker_dict,
             self.marker_size_cm,
-            h_original
+            h_original,
+            self.marker_positions
         )
 
         if self.debug:
@@ -211,7 +212,14 @@ class ArUcoBackdropCalibrator:
                 print(f"    Marker {marker_id}: {size_px:.2f} px")
             print(f"  Average: {calibration_data['marker_size_pixels_avg']:.2f} px")
             print(f"  Variation (CV): {calibration_data['marker_size_variation_cv']:.4f}")
-            print(f"  Pixels per cm: {calibration_data['pixels_per_cm']:.2f}")
+
+            # Show detailed calibration breakdown
+            print(f"  Pixels per cm calculation:")
+            print(f"    From marker size: {calibration_data['pixels_per_cm_from_marker_size']:.2f}")
+            print(f"    From horizontal distance: {calibration_data['pixels_per_cm_horizontal']:.2f}")
+            print(f"    From vertical distance: {calibration_data['pixels_per_cm_vertical']:.2f}")
+            print(f"    Final (averaged): {calibration_data['pixels_per_cm']:.2f}")
+            print(f"    Method: {calibration_data['pixels_per_cm_method']}")
 
         # Stage 4: Get backdrop corners
         if self.debug:

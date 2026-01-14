@@ -164,15 +164,22 @@ def get_backdrop_corners_from_markers(
 def calculate_calibration_from_markers(
     marker_dict: Dict[int, np.ndarray],
     marker_size_cm: float,
-    image_height: int
+    image_height: int,
+    marker_positions: Dict
 ) -> Dict:
     """
     Calculate calibration data from detected ArUco markers.
+
+    This function calculates pixels_per_cm by measuring marker size AND
+    horizontal/vertical distances between markers, then averaging all three
+    methods for maximum robustness.
 
     Args:
         marker_dict: Dictionary mapping marker ID to corners
         marker_size_cm: Physical size of markers in cm
         image_height: Original image height in pixels
+        marker_positions: Dict with physical marker positions (x, y in cm)
+                         Required - either from user or DEFAULT_MARKER_POSITIONS
 
     Returns:
         Dictionary containing calibration data
@@ -187,8 +194,51 @@ def calculate_calibration_from_markers(
     avg_marker_size_px = np.mean(marker_sizes_px)
     marker_size_variation = np.std(marker_sizes_px) / avg_marker_size_px if avg_marker_size_px > 0 else 0
 
-    # Calculate pixels per cm
-    pixels_per_cm = avg_marker_size_px / marker_size_cm
+    # Method 1: Calculate pixels per cm from marker size
+    pixels_per_cm_from_marker = avg_marker_size_px / marker_size_cm
+
+    # Method 2: Calculate pixels per cm from horizontal distance between markers
+    # Get marker centers in pixel coordinates
+    center_0 = get_marker_center(marker_dict[0])  # Top-left
+    center_1 = get_marker_center(marker_dict[1])  # Top-right
+    center_2 = get_marker_center(marker_dict[2])  # Bottom-left
+    center_3 = get_marker_center(marker_dict[3])  # Bottom-right
+
+    # Calculate horizontal distance (average of top and bottom)
+    top_distance_px = np.linalg.norm(np.array(center_1) - np.array(center_0))
+    bottom_distance_px = np.linalg.norm(np.array(center_3) - np.array(center_2))
+    avg_horizontal_distance_px = (top_distance_px + bottom_distance_px) / 2
+
+    # Known physical horizontal distance
+    physical_horizontal_cm = abs(marker_positions['top_right']['x'] - marker_positions['top_left']['x'])
+
+    if physical_horizontal_cm > 0:
+        pixels_per_cm_horizontal = avg_horizontal_distance_px / physical_horizontal_cm
+    else:
+        # If markers have same x position, can't calculate horizontal scale
+        pixels_per_cm_horizontal = pixels_per_cm_from_marker
+
+    # Method 3: Calculate pixels per cm from vertical distance between markers
+    # Calculate vertical distance (average of left and right)
+    left_distance_px = np.linalg.norm(np.array(center_2) - np.array(center_0))
+    right_distance_px = np.linalg.norm(np.array(center_3) - np.array(center_1))
+    avg_vertical_distance_px = (left_distance_px + right_distance_px) / 2
+
+    # Known physical vertical distance
+    physical_vertical_cm = abs(marker_positions['top_left']['y'] - marker_positions['bottom_left']['y'])
+
+    if physical_vertical_cm > 0:
+        pixels_per_cm_vertical = avg_vertical_distance_px / physical_vertical_cm
+    else:
+        # If markers have same y position, can't calculate vertical scale
+        pixels_per_cm_vertical = pixels_per_cm_from_marker
+
+    # Average all three methods for robust pixels_per_cm
+    pixels_per_cm = np.mean([
+        pixels_per_cm_from_marker,
+        pixels_per_cm_horizontal,
+        pixels_per_cm_vertical
+    ])
 
     # Calculate cm_per_normalized_unit
     # normalized_unit = 1.0 means full image height
@@ -204,6 +254,7 @@ def calculate_calibration_from_markers(
     else:
         confidence = "low"
 
+    # Return calibration result with detailed breakdown
     return {
         "cm_per_normalized_unit": float(cm_per_normalized_unit),
         "pixels_per_cm": float(pixels_per_cm),
@@ -213,7 +264,12 @@ def calculate_calibration_from_markers(
         "marker_size_pixels_avg": float(avg_marker_size_px),
         "marker_size_pixels_individual": [float(s) for s in marker_sizes_px],
         "marker_size_variation_cv": float(marker_size_variation),
-        "confidence": confidence
+        "confidence": confidence,
+        # Detailed breakdown of calibration methods
+        "pixels_per_cm_from_marker_size": float(pixels_per_cm_from_marker),
+        "pixels_per_cm_horizontal": float(pixels_per_cm_horizontal),
+        "pixels_per_cm_vertical": float(pixels_per_cm_vertical),
+        "pixels_per_cm_method": "averaged_3_methods"
     }
 
 

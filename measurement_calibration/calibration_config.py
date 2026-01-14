@@ -14,7 +14,7 @@ import cv2
 
 # Default marker size (should match printed marker size in cm)
 # 12cm markers recommended for better accuracy (more pixels per marker)
-DEFAULT_MARKER_SIZE_CM = 12.0
+DEFAULT_MARKER_SIZE_CM = 16.4
 
 # ArUco dictionary type
 # DICT_4X4_50: 4×4 bit markers, 50 unique IDs (IDs 0-49)
@@ -89,12 +89,12 @@ MAX_MARKER_VARIATION_FOR_ACCEPTANCE = 0.15  # 15%
 # - Bottom markers at 10cm height from floor
 # - Top markers at 200cm height from floor
 # - Left markers at 0cm horizontal position
-# - Right markers at 200cm horizontal position
+# - Right markers at 100cm horizontal position
 DEFAULT_MARKER_POSITIONS = {
     "top_left": {"x": 0, "y": 200},      # Marker ID 0
-    "top_right": {"x": 200, "y": 200},   # Marker ID 1
+    "top_right": {"x": 100, "y": 200},   # Marker ID 1
     "bottom_left": {"x": 0, "y": 10},    # Marker ID 2
-    "bottom_right": {"x": 200, "y": 10}  # Marker ID 3
+    "bottom_right": {"x": 100, "y": 10}  # Marker ID 3
 }
 
 # Note: If your backdrop is elevated (e.g., 10cm off the ground) and you place

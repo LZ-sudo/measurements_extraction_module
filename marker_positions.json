@@ -1,19 +1,19 @@
 {
   "top_left": {
     "x": 0,
-    "y": 210
+    "y": 203.2
   },
   "top_right": {
-    "x": 200,
-    "y": 210
+    "x": 83,
+    "y": 203.2
   },
   "bottom_left": {
     "x": 0,
-    "y": 20
+    "y": 8.2
   },
   "bottom_right": {
-    "x": 200,
-    "y": 20
+    "x": 83,
+    "y": 8.2
   },
   "_comment": "Example marker positions file for elevated backdrop",
   "_note": "This example is for a backdrop elevated 10cm above floor",
@@ -22,6 +22,6 @@
     "calculation": "Actual heights from floor = backdrop marking + 10cm elevation",
     "bottom_markers": "10cm (marking) + 10cm (elevation) = 20cm from floor",
     "top_markers": "200cm (marking) + 10cm (elevation) = 210cm from floor",
-    "horizontal": "x values represent horizontal position in cm (0cm = left edge, 200cm = right edge)"
+    "horizontal": "x values represent horizontal position in cm (0cm = left edge, 100cm = right edge)"
   }
 }
