@@ -7,10 +7,10 @@ This script orchestrates the complete end-to-end measurement extraction pipeline
 3. Measurement extraction with calibration
 
 Usage:
-    python complete_measurements.py <image> -s <marker_size> --marker-positions <positions_json> [options]
+    python complete_measurements.py <image> --marker-details <marker_details_json> [options]
 
 Example:
-    python complete_measurements.py subject.jpg -s 16.4 --marker-positions marker_pos.json --camera-calibration camera_cal.json -o measurements.json
+    python complete_measurements.py subject.jpg --marker-details marker_details.json --camera-calibration camera_cal.json -o measurements.json
 """
 
 import os
@@ -37,12 +37,12 @@ class CompleteMeasurementPipeline:
     def __init__(
         self,
         image_path: str,
-        marker_size_cm: float,
-        marker_positions_path: str,
+        marker_details_path: str,
         camera_calibration_path: Optional[str] = None,
         output_measurements_path: Optional[str] = None,
         output_calibration_path: Optional[str] = None,
         output_visualization_dir: Optional[str] = None,
+        known_height_cm: Optional[float] = None,
         debug: bool = False
     ):
         """
@@ -50,22 +50,26 @@ class CompleteMeasurementPipeline:
 
         Args:
             image_path: Path to input image with ArUco markers
-            marker_size_cm: Physical size of ArUco markers in cm
-            marker_positions_path: Path to marker positions JSON (required)
+            marker_details_path: Path to marker details JSON containing marker_size_cm and marker_positions_cm
             camera_calibration_path: Optional path to camera calibration JSON
             output_measurements_path: Path to save final measurements JSON
             output_calibration_path: Optional path to save calibration JSON
             output_visualization_dir: Optional directory to save calibration visualization
+            known_height_cm: Optional subject's known height in cm for depth correction
             debug: Enable debug output
         """
         self.image_path = image_path
-        self.marker_size_cm = marker_size_cm
-        self.marker_positions_path = marker_positions_path
+        self.marker_details_path = marker_details_path
         self.camera_calibration_path = camera_calibration_path
         self.output_measurements_path = output_measurements_path
         self.output_calibration_path = output_calibration_path
         self.output_visualization_dir = output_visualization_dir
+        self.known_height_cm = known_height_cm
         self.debug = debug
+
+        # Load marker details for debug output
+        with open(marker_details_path, 'r', encoding='utf-8') as f:
+            self.marker_details = json.load(f)
 
         # Temporary files to clean up
         self.temp_files = []
@@ -82,10 +86,13 @@ class CompleteMeasurementPipeline:
             print("COMPLETE MEASUREMENT EXTRACTION PIPELINE")
             print("=" * 70)
             print(f"Input image: {self.image_path}")
-            print(f"Marker size: {self.marker_size_cm} cm")
-            print(f"Marker positions: {self.marker_positions_path}")
+            print(f"Marker details: {self.marker_details_path}")
+            print(f"  Marker size: {self.marker_details.get('marker_size_cm')} cm")
+            print(f"  Marker positions: {list(self.marker_details.get('marker_positions_cm', {}).keys())}")
             if self.camera_calibration_path:
                 print(f"Camera calibration: {self.camera_calibration_path}")
+            if self.known_height_cm:
+                print(f"Known height: {self.known_height_cm} cm (depth correction enabled)")
             print()
 
         try:
@@ -137,11 +144,10 @@ class CompleteMeasurementPipeline:
         # Run calibration
         calibration_result = calibrate_backdrop(
             image_path=self.image_path,
-            marker_size_cm=self.marker_size_cm,
             output_calibration_path=calibration_path,
             visualization_dir=self.output_visualization_dir,
             camera_calibration_path=self.camera_calibration_path,
-            marker_positions_path=self.marker_positions_path,
+            marker_details_path=self.marker_details_path,
             debug=self.debug
         )
 
@@ -179,7 +185,8 @@ class CompleteMeasurementPipeline:
             output_dir=output_dir,
             output_prefix=output_prefix,
             save_intermediates=False,  # Don't save intermediate detection JSONs
-            camera_calibration_path=self.camera_calibration_path
+            camera_calibration_path=self.camera_calibration_path,
+            known_height_cm=self.known_height_cm
         )
 
         # Load and combine measurements
@@ -231,26 +238,34 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Basic usage with 16.4cm markers
-  python complete_measurements.py subject.jpg -s 16.4 --marker-positions marker_pos.json
+  # Basic usage with marker details JSON
+  python complete_measurements.py subject.jpg --marker-details marker_details.json
 
   # With camera calibration and custom output
-  python complete_measurements.py subject.jpg -s 16.4 \\
-      --marker-positions marker_pos.json \\
+  python complete_measurements.py subject.jpg \\
+      --marker-details marker_details.json \\
       --camera-calibration camera_cal.json \\
       -o measurements.json
 
-  # With all outputs saved
-  python complete_measurements.py subject.jpg -s 16.4 \\
-      --marker-positions marker_pos.json \\
+  # With depth correction using known height
+  python complete_measurements.py subject.jpg \\
+      --marker-details marker_details.json \\
       --camera-calibration camera_cal.json \\
+      --height 168.5 \\
+      -o measurements.json
+
+  # With all outputs saved
+  python complete_measurements.py subject.jpg \\
+      --marker-details marker_details.json \\
+      --camera-calibration camera_cal.json \\
+      --height 168.5 \\
       -o measurements.json \\
       --save-calibration calibration.json \\
       --save-visualization ./visualizations
 
   # With debug output
-  python complete_measurements.py subject.jpg -s 16.4 \\
-      --marker-positions marker_pos.json --debug
+  python complete_measurements.py subject.jpg \\
+      --marker-details marker_details.json --debug
         """
     )
 
@@ -261,16 +276,10 @@ Examples:
         help="Path to input image with ArUco markers and subject"
     )
     parser.add_argument(
-        "-s", "--marker-size",
-        type=float,
-        required=True,
-        help="Physical size of ArUco markers in cm"
-    )
-    parser.add_argument(
-        "--marker-positions",
+        "--marker-details",
         type=str,
         required=True,
-        help="Path to JSON file specifying physical marker positions (x, y in cm from floor)"
+        help="Path to JSON file containing marker_size_cm and marker_positions_cm"
     )
 
     # Optional calibration inputs
@@ -297,6 +306,13 @@ Examples:
         help="Directory to save calibration visualization image (default: not saved)"
     )
 
+    # Measurement options
+    parser.add_argument(
+        "--height",
+        type=float,
+        help="Subject's known height in cm (for depth correction)"
+    )
+
     # Debug options
     parser.add_argument(
         "--debug",
@@ -311,9 +327,9 @@ Examples:
         print(f"Error: Input image not found: {args.input_image}")
         sys.exit(1)
 
-    # Validate marker positions exists
-    if not os.path.exists(args.marker_positions):
-        print(f"Error: Marker positions file not found: {args.marker_positions}")
+    # Validate marker details file exists
+    if not os.path.exists(args.marker_details):
+        print(f"Error: Marker details file not found: {args.marker_details}")
         sys.exit(1)
 
     # Validate camera calibration exists if provided
@@ -324,12 +340,12 @@ Examples:
     # Create pipeline and run
     pipeline = CompleteMeasurementPipeline(
         image_path=args.input_image,
-        marker_size_cm=args.marker_size,
-        marker_positions_path=args.marker_positions,
+        marker_details_path=args.marker_details,
         camera_calibration_path=args.camera_calibration,
         output_measurements_path=args.output,
         output_calibration_path=args.save_calibration,
         output_visualization_dir=args.save_visualization,
+        known_height_cm=args.height,
         debug=args.debug
     )
 

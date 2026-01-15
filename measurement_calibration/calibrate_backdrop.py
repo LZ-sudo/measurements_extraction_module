@@ -23,12 +23,17 @@ CALIBRATION PROCESS:
 5. Output calibration data compatible with existing measurement pipeline
 """
 
+import os
+import sys
 import cv2
 import numpy as np
 import json
 import argparse
 from typing import Dict, Optional
 from pathlib import Path
+
+# Add this directory to path for local imports
+sys.path.insert(0, os.path.dirname(__file__))
 
 # Import configuration and utilities
 import calibration_config as config

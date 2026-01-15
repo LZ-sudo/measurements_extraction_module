@@ -21,6 +21,7 @@ import sys
 import tempfile
 from typing import Dict, Tuple, Optional, List
 from pathlib import Path
+import copy
 
 # Add parent directory to path for config imports
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
@@ -202,7 +203,6 @@ def apply_calibration_shift(
     Returns:
         New calibration dict with shifted values applied
     """
-    import copy
 
     # Perform iterative refinement if requested
     if iterate and body_data is not None and image_path is not None:
