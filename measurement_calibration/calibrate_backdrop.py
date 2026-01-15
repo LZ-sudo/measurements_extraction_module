@@ -55,27 +55,28 @@ class ArUcoBackdropCalibrator:
 
     def __init__(
         self,
-        marker_size_cm: float = None,
+        marker_details: Optional[Dict] = None,
         debug: bool = False,
         visualization_dir: Optional[str] = None,
-        camera_calibration_path: Optional[str] = None,
-        marker_positions: Optional[Dict] = None
+        camera_calibration_path: Optional[str] = None
     ):
         """
         Initialize ArUco-based calibrator.
 
         Args:
-            marker_size_cm: Physical size of printed ArUco markers in cm
-                          (if None, uses DEFAULT_MARKER_SIZE_CM from config)
+            marker_details: Optional dict containing marker_size_cm and marker_positions_cm
+                          (if None, uses defaults from config)
             debug: Enable debug output
             visualization_dir: Directory to save visualization images
             camera_calibration_path: Optional path to camera calibration JSON file
-            marker_positions: Optional dict specifying physical marker positions in cm
-                            (if None, uses DEFAULT_MARKER_POSITIONS from config)
         """
-        # Use config default if not specified
-        self.marker_size_cm = marker_size_cm or config.DEFAULT_MARKER_SIZE_CM
-        self.marker_positions = marker_positions or config.DEFAULT_MARKER_POSITIONS
+        # Extract marker size and positions from marker_details or use config defaults
+        if marker_details:
+            self.marker_size_cm = marker_details.get('marker_size_cm', config.DEFAULT_MARKER_SIZE_CM)
+            self.marker_positions = marker_details.get('marker_positions_cm', config.DEFAULT_MARKER_POSITIONS)
+        else:
+            self.marker_size_cm = config.DEFAULT_MARKER_SIZE_CM
+            self.marker_positions = config.DEFAULT_MARKER_POSITIONS
         self.debug = debug
         self.visualization_dir = visualization_dir
 
@@ -317,11 +318,10 @@ class ArUcoBackdropCalibrator:
 
 def calibrate_backdrop(
     image_path: str,
-    marker_size_cm: float = None,
     output_calibration_path: Optional[str] = None,
     visualization_dir: Optional[str] = None,
     camera_calibration_path: Optional[str] = None,
-    marker_positions_path: Optional[str] = None,
+    marker_details_path: Optional[str] = None,
     debug: bool = False
 ) -> Dict:
     """
@@ -329,12 +329,10 @@ def calibrate_backdrop(
 
     Args:
         image_path: Path to input image
-        marker_size_cm: Physical size of printed ArUco markers in cm
-                       (if None, uses DEFAULT_MARKER_SIZE_CM from config)
         output_calibration_path: Optional path to save calibration data
         visualization_dir: Optional directory to save visualization images
         camera_calibration_path: Optional path to camera calibration JSON file
-        marker_positions_path: Optional path to JSON file with marker positions
+        marker_details_path: Optional path to JSON file with marker size and positions
         debug: Print debug information
 
     Returns:
@@ -345,21 +343,22 @@ def calibrate_backdrop(
     if image is None:
         raise ValueError(f"Could not read image from {image_path}")
 
-    # Load marker positions if provided
-    marker_positions = None
-    if marker_positions_path:
-        with open(marker_positions_path, 'r') as f:
-            marker_positions = json.load(f)
+    # Load marker details if provided
+    marker_details = None
+    if marker_details_path:
+        with open(marker_details_path, 'r', encoding='utf-8') as f:
+            marker_details = json.load(f)
         if debug:
-            print(f"Loaded marker positions from: {marker_positions_path}")
+            print(f"Loaded marker details from: {marker_details_path}")
+            print(f"  Marker size: {marker_details.get('marker_size_cm')} cm")
+            print(f"  Marker positions: {list(marker_details.get('marker_positions_cm', {}).keys())}")
 
     # Perform calibration
     calibrator = ArUcoBackdropCalibrator(
-        marker_size_cm=marker_size_cm,
+        marker_details=marker_details,
         debug=debug,
         visualization_dir=visualization_dir,
-        camera_calibration_path=camera_calibration_path,
-        marker_positions=marker_positions
+        camera_calibration_path=camera_calibration_path
     )
     result = calibrator.calibrate(image)
 
@@ -382,12 +381,6 @@ if __name__ == "__main__":
     )
     parser.add_argument("input_image", type=str, help="Path to backdrop image")
     parser.add_argument(
-        "-s", "--marker-size",
-        type=float,
-        default=None,
-        help=f"Physical size of ArUco markers in cm (default: {config.DEFAULT_MARKER_SIZE_CM})"
-    )
-    parser.add_argument(
         "-c", "--calibration-output",
         type=str,
         help="Path to save calibration data JSON"
@@ -403,9 +396,9 @@ if __name__ == "__main__":
         help="Path to camera calibration JSON file (for lens distortion correction)"
     )
     parser.add_argument(
-        "--marker-positions",
+        "--marker-details",
         type=str,
-        help="Path to JSON file specifying physical marker positions (x, y in cm from floor)"
+        help="Path to JSON file containing marker_size_cm and marker_positions_cm"
     )
     parser.add_argument(
         "--debug",
@@ -418,11 +411,10 @@ if __name__ == "__main__":
     # Perform calibration
     result = calibrate_backdrop(
         args.input_image,
-        marker_size_cm=args.marker_size,
         output_calibration_path=args.calibration_output,
         visualization_dir=args.visualization_dir,
         camera_calibration_path=args.camera_calibration,
-        marker_positions_path=args.marker_positions,
+        marker_details_path=args.marker_details,
         debug=args.debug
     )
 
