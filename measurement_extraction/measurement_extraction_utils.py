@@ -88,6 +88,193 @@ def cleanup_temporary_image(temp_image_path: Optional[str]):
 
 
 # ============================================================================
+# PLANE SHIFTING UTILITIES (for depth correction)
+# ============================================================================
+
+def measure_height_in_pixels(
+    body_data: Dict,
+    pose_data: Optional[Dict],
+    image_height: int
+) -> Optional[float]:
+    """
+    Measure subject height in pixels from body segmentation and pose data.
+
+    Uses body segmentation for the top (head) and pose heel landmarks for the
+    bottom (feet). This is used to calculate the plane shift factor for depth
+    correction.
+
+    Args:
+        body_data: Body detection data containing height information
+        pose_data: Pose detection data with heel landmarks
+        image_height: Image height in pixels
+
+    Returns:
+        Height in pixels, or None if data is invalid
+    """
+    try:
+        height_info = body_data.get('height', {})
+        y_top = height_info.get('top', {}).get('y')
+        y_bottom_seg = height_info.get('bottom', {}).get('y')
+
+        if y_top is None or y_bottom_seg is None:
+            return None
+
+        # Use segmentation bottom as default
+        y_bottom = y_bottom_seg
+
+        # Prefer heel landmarks if available (more accurate)
+        if pose_data and 'heel_landmarks' in pose_data:
+            heel_data = pose_data['heel_landmarks']
+            left_heel = heel_data.get('left')
+            right_heel = heel_data.get('right')
+
+            if left_heel and right_heel:
+                y_bottom = (left_heel['y'] + right_heel['y']) / 2
+
+        # Convert normalized coordinates to pixels
+        height_pixels = abs(y_bottom - y_top) * image_height
+        return height_pixels
+
+    except (KeyError, TypeError):
+        return None
+
+
+def calculate_shift_factor(
+    known_height_cm: float,
+    measured_height_px: float,
+    pixels_per_cm_backdrop: float
+) -> float:
+    """
+    Calculate the plane shift factor to move calibration from backdrop to subject plane.
+
+    The shift factor represents the ratio D/d1 where:
+    - D is the camera-to-backdrop distance
+    - d1 is the camera-to-subject distance
+
+    This factor is used to adjust the backdrop calibration to the subject's plane,
+    correcting for the depth offset that causes measurement overestimation.
+
+    Args:
+        known_height_cm: Subject's known height in centimeters
+        measured_height_px: Subject's measured height in pixels (from landmarks)
+        pixels_per_cm_backdrop: Pixels per cm at the backdrop plane (from ArUco calibration)
+
+    Returns:
+        Shift factor to multiply with pixels_per_cm_backdrop
+    """
+    expected_height_px = known_height_cm * pixels_per_cm_backdrop
+    shift_factor = measured_height_px / expected_height_px
+    return shift_factor
+
+
+def apply_calibration_shift(
+    calibration_data: Dict,
+    shift_factor: float,
+    known_height_cm: float,
+    body_data: Optional[Dict] = None,
+    pose_data: Optional[Dict] = None,
+    image_path: Optional[str] = None,
+    iterate: bool = True,
+    tolerance_cm: float = 0.1,
+    max_iterations: int = 10
+) -> Dict:
+    """
+    Apply shift factor to calibration data, returning shifted calibration.
+
+    Creates a modified copy of the calibration data with adjusted values
+    for the subject's plane. Original backdrop values are preserved.
+
+    When iterate=True, performs iterative refinement using the perspective-corrected
+    height measurement to converge the shift factor until the measured height
+    matches the known height within the specified tolerance.
+
+    Args:
+        calibration_data: Original calibration data from ArUco backdrop calibration
+        shift_factor: Initial shift factor from calculate_shift_factor()
+        known_height_cm: Subject's known height (stored for reference)
+        body_data: Body detection data (required if iterate=True)
+        pose_data: Pose detection data (required if iterate=True)
+        image_path: Path to image (required if iterate=True)
+        iterate: Whether to perform iterative refinement (default: False)
+        tolerance_cm: Convergence tolerance in cm (default: 0.1 cm)
+        max_iterations: Maximum iterations (default: 10)
+
+    Returns:
+        New calibration dict with shifted values applied
+    """
+    import copy
+
+    # Perform iterative refinement if requested
+    if iterate and body_data is not None and image_path is not None:
+        print(f"\n   Iterative plane shift refinement:")
+
+        for iteration in range(max_iterations):
+            # Create temporary shifted calibration
+            temp_calibration = copy.deepcopy(calibration_data)
+            original_pixels_per_cm = calibration_data['calibration_data']['pixels_per_cm']
+            original_cm_per_normalized = calibration_data['calibration_data']['cm_per_normalized_unit']
+
+            temp_calibration['calibration_data']['pixels_per_cm'] = original_pixels_per_cm * shift_factor
+            temp_calibration['calibration_data']['cm_per_normalized_unit'] = original_cm_per_normalized / shift_factor
+
+            # Measure height using perspective-corrected method
+            # extract_height is defined later in this file, so we call it directly
+            measured_height_cm = extract_height(
+                body_data, temp_calibration, image_path, pose_data
+            )
+
+            if measured_height_cm is None:
+                print(f"      Iteration {iteration + 1}: Height extraction failed, stopping")
+                break
+
+            # Apply perspective correction (divide by current shift factor)
+            corrected_height_cm = measured_height_cm / shift_factor
+
+            # Calculate error
+            error = corrected_height_cm - known_height_cm
+
+            print(f"      Iteration {iteration + 1}: height={corrected_height_cm:.2f} cm, "
+                  f"error={error:+.2f} cm, shift={shift_factor:.6f}")
+
+            # Check convergence
+            if abs(error) < tolerance_cm:
+                print(f"      Converged after {iteration + 1} iteration(s)")
+                break
+
+            # Adjust shift factor proportionally
+            adjustment = corrected_height_cm / known_height_cm
+            shift_factor = shift_factor * adjustment
+
+    # Apply final shift factor
+    shifted_calibration = copy.deepcopy(calibration_data)
+
+    # Get original backdrop values
+    original_pixels_per_cm = calibration_data['calibration_data']['pixels_per_cm']
+    original_cm_per_normalized = calibration_data['calibration_data']['cm_per_normalized_unit']
+
+    # Calculate shifted values
+    shifted_pixels_per_cm = original_pixels_per_cm * shift_factor
+    shifted_cm_per_normalized = original_cm_per_normalized / shift_factor
+
+    # Update calibration data with shifted values
+    shifted_calibration['calibration_data']['pixels_per_cm'] = shifted_pixels_per_cm
+    shifted_calibration['calibration_data']['cm_per_normalized_unit'] = shifted_cm_per_normalized
+
+    # Store shift metadata for reference
+    shifted_calibration['plane_shift'] = {
+        'applied': True,
+        'shift_factor': shift_factor,
+        'known_height_cm': known_height_cm,
+        'original_pixels_per_cm': original_pixels_per_cm,
+        'original_cm_per_normalized_unit': original_cm_per_normalized,
+        'shifted_pixels_per_cm': shifted_pixels_per_cm,
+        'shifted_cm_per_normalized_unit': shifted_cm_per_normalized
+    }
+
+    return shifted_calibration
+
+
+# ============================================================================
 # PERSPECTIVE TRANSFORMATION UTILITIES
 # ============================================================================
 

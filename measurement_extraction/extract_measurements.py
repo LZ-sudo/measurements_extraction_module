@@ -35,7 +35,11 @@ from measurement_extraction.measurement_extraction_utils import (
     extract_hand_measurements,
     extract_neck_length,
     prepare_image_for_measurement,
-    cleanup_temporary_image
+    cleanup_temporary_image,
+    measure_height_in_pixels,
+    calculate_shift_factor,
+    apply_calibration_shift,
+    get_image_dimensions
 )
 
 # Import camera calibration
@@ -53,7 +57,8 @@ class MeasurementExtractor:
         calibration_path: str,
         output_dir: Optional[str] = None,
         save_intermediates: bool = False,
-        camera_calibration_path: Optional[str] = None
+        camera_calibration_path: Optional[str] = None,
+        known_height_cm: Optional[float] = None
     ):
         """
         Initialize the measurement extractor.
@@ -64,10 +69,12 @@ class MeasurementExtractor:
             output_dir: Directory to save output files (default: same as image)
             save_intermediates: Whether to save intermediate landmark JSON files
             camera_calibration_path: Optional path to camera calibration JSON for undistortion
+            known_height_cm: Optional subject's known height in cm for depth correction
         """
         self.image_path = image_path
         self.calibration_path = calibration_path
         self.camera_calibration_path = camera_calibration_path
+        self.known_height_cm = known_height_cm
 
         # Set output directory
         if output_dir is None:
@@ -191,17 +198,78 @@ class MeasurementExtractor:
             'hair_measurements': {}
         }
 
+        # Determine which calibration to use (original or shifted)
+        calibration_to_use = self.calibration_data
+
+        # Apply plane shift if known height is provided
+        if self.known_height_cm is not None:
+            print(f"\n   Applying depth correction using known height: {self.known_height_cm} cm")
+
+            # Get image dimensions
+            image_width, image_height = get_image_dimensions(self.image_path)
+
+            # Measure subject height in pixels
+            measured_height_px = measure_height_in_pixels(
+                detections.get('body', {}),
+                detections.get('pose', {}),
+                image_height
+            )
+
+            if measured_height_px is not None:
+                # Calculate initial shift factor
+                pixels_per_cm_backdrop = self.calibration_data['calibration_data']['pixels_per_cm']
+                initial_shift_factor = calculate_shift_factor(
+                    self.known_height_cm,
+                    measured_height_px,
+                    pixels_per_cm_backdrop
+                )
+
+                print(f"   Initial shift factor: {initial_shift_factor:.4f}")
+
+                # Apply shift to calibration with iterative refinement
+                calibration_to_use = apply_calibration_shift(
+                    self.calibration_data,
+                    initial_shift_factor,
+                    self.known_height_cm,
+                    body_data=detections.get('body', {}),
+                    pose_data=detections.get('pose', {}),
+                    image_path=self.image_path,
+                    iterate=True,
+                    tolerance_cm=0.1,
+                    max_iterations=10
+                )
+
+                # Get final shift factor after iteration
+                shift_factor = calibration_to_use['plane_shift']['shift_factor']
+                print(f"   Final shift factor: {shift_factor:.4f}")
+                print(f"   Original pixels_per_cm: {pixels_per_cm_backdrop:.4f}")
+                print(f"   Shifted pixels_per_cm: {calibration_to_use['calibration_data']['pixels_per_cm']:.4f}")
+
+                # Store shift info in measurements for reference
+                measurements['plane_shift_applied'] = True
+                measurements['shift_factor'] = shift_factor
+            else:
+                print(f"   WARNING: Could not measure height in pixels, using original calibration")
+                measurements['plane_shift_applied'] = False
+
         # Extract height from body detection
         if detections.get('body'):
             height_cm = extract_height(
                 detections['body'],
-                self.calibration_data,
+                calibration_to_use,
                 self.image_path,
                 pose_data=detections.get('pose')  # Pass pose data for ankle landmarks
             )
             if height_cm is not None:
+                # Apply plane shift correction for perspective-corrected height
+                # The perspective method uses homography which maps to backdrop plane,
+                # so we need to divide by shift_factor to get subject plane measurement
+                if 'plane_shift' in calibration_to_use:
+                    height_cm = height_cm / calibration_to_use['plane_shift']['shift_factor']
+                    print(f"   Height (after depth correction): {height_cm:.2f} cm")
+                else:
+                    print(f"   Height: {height_cm:.2f} cm")
                 measurements['body_measurements']['height_cm'] = height_cm
-                print(f"   Height: {height_cm:.2f} cm")
             else:
                 print(f"   Height extraction failed")
 
@@ -209,7 +277,7 @@ class MeasurementExtractor:
         if detections.get('hair'):
             hair_length_cm = extract_hair_length(
                 detections['hair'],
-                self.calibration_data,
+                calibration_to_use,
                 self.image_path
             )
             if hair_length_cm is not None:
@@ -222,7 +290,7 @@ class MeasurementExtractor:
         if detections.get('pose'):
             pose_measurements = extract_pose_measurements(
                 detections['pose'],
-                self.calibration_data,
+                calibration_to_use,
                 self.image_path
             )
 
@@ -237,7 +305,7 @@ class MeasurementExtractor:
             # Extract neck length if available
             neck_length_cm = extract_neck_length(
                 detections['pose'],
-                self.calibration_data,
+                calibration_to_use,
                 self.image_path
             )
             if neck_length_cm is not None:
@@ -248,7 +316,7 @@ class MeasurementExtractor:
         if detections.get('hands'):
             hand_length_cm = extract_hand_measurements(
                 detections['hands'],
-                self.calibration_data,
+                calibration_to_use,
                 self.image_path
             )
             if hand_length_cm is not None:
@@ -317,6 +385,8 @@ class MeasurementExtractor:
         print(f"Calibration: {self.calibration_path}")
         if self.camera_calibration_path:
             print(f"Camera calibration: {self.camera_calibration_path}")
+        if self.known_height_cm:
+            print(f"Known height: {self.known_height_cm} cm (depth correction enabled)")
         print(f"Output directory: {self.output_dir}")
         print()
 
@@ -354,7 +424,8 @@ def extract_measurements(
     output_dir: Optional[str] = None,
     output_prefix: Optional[str] = None,
     save_intermediates: bool = False,
-    camera_calibration_path: Optional[str] = None
+    camera_calibration_path: Optional[str] = None,
+    known_height_cm: Optional[float] = None
 ) -> tuple:
     """
     Convenience function to run measurement extraction pipeline.
@@ -366,6 +437,7 @@ def extract_measurements(
         output_prefix: Prefix for output filenames (default: image filename)
         save_intermediates: Whether to save intermediate landmark JSONs
         camera_calibration_path: Optional path to camera calibration JSON for undistortion
+        known_height_cm: Optional subject's known height in cm for depth correction
 
     Returns:
         Tuple of (body_measurements_path, hair_measurements_path)
@@ -375,7 +447,8 @@ def extract_measurements(
         calibration_path,
         output_dir,
         save_intermediates,
-        camera_calibration_path
+        camera_calibration_path,
+        known_height_cm
     )
     return extractor.run(output_prefix)
 
@@ -414,6 +487,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Save intermediate landmark detection JSON files"
     )
+    parser.add_argument(
+        "--height",
+        type=float,
+        help="Subject's known height in cm (for depth correction)"
+    )
 
     args = parser.parse_args()
 
@@ -425,7 +503,8 @@ if __name__ == "__main__":
             args.output_dir,
             args.prefix,
             args.save_intermediates,
-            args.camera_calibration
+            args.camera_calibration,
+            args.height
         )
     except Exception as e:
         print(f"\nError: {e}")
