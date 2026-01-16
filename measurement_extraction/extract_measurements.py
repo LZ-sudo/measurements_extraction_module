@@ -2,7 +2,9 @@
 Measurement Extraction Orchestrator
 
 This script orchestrates the complete measurement extraction process:
-1. Runs MediaPipe detection scripts to extract landmark coordinates
+1. Runs detection scripts to extract landmark coordinates:
+   - RTMLib (RTMW) for pose and hand detection (higher accuracy)
+   - MediaPipe for body and hair segmentation
 2. Loads calibration data from backdrop calibration
 3. Converts normalized coordinates to real-world measurements in cm
 4. Outputs separate JSON files for hair and body measurements
@@ -21,11 +23,13 @@ from typing import Dict, Optional
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
-# Import MediaPipe detection modules
+# Import MediaPipe detection modules (for segmentation)
 from mediapipe_detection.body_segmentation import segment_body
 from mediapipe_detection.hair_segmentation import segment_hair
-from mediapipe_detection.pose_detection import detect_pose
-from mediapipe_detection.hand_detection import detect_hands
+
+# Import RTMLib detection modules (for pose and hand - higher accuracy)
+from rtmlib_detection.pose_detection import detect_pose
+from rtmlib_detection.hand_detection import detect_hands
 
 # Import measurement utilities
 from measurement_extraction.measurement_extraction_utils import (
@@ -113,7 +117,8 @@ class MeasurementExtractor:
 
     def run_detections(self, image_path: str) -> Dict:
         """
-        Run all MediaPipe detection scripts and collect landmark data.
+        Run all detection scripts and collect landmark data.
+        Uses RTMLib for pose/hand detection and MediaPipe for segmentation.
 
         Args:
             image_path: Path to the image to process (original or undistorted)
@@ -121,7 +126,7 @@ class MeasurementExtractor:
         Returns:
             Dictionary containing all detection results
         """
-        print("Running MediaPipe detections...")
+        print("Running detections (RTMLib + MediaPipe)...")
 
         detections = {}
 
@@ -152,8 +157,8 @@ class MeasurementExtractor:
             print(f"     Hair segmentation failed: {e}")
             detections['hair'] = {}
 
-        # 3. Pose detection (for body measurements)
-        print("  - Pose detection...")
+        # 3. Pose detection using RTMLib RTMW (for body measurements)
+        print("  - Pose detection (RTMLib RTMW)...")
         try:
             pose_output = self._get_intermediate_path("pose_detection")
             detections['pose'] = detect_pose(
@@ -165,14 +170,13 @@ class MeasurementExtractor:
             print(f"     Pose detection failed: {e}")
             detections['pose'] = {}
 
-        # 4. Hand detection (for hand length)
-        print("  - Hand detection...")
+        # 4. Hand detection using RTMLib RTMW (for hand length)
+        print("  - Hand detection (RTMLib RTMW)...")
         try:
             hand_output = self._get_intermediate_path("hand_detection")
             detections['hands'] = detect_hands(
                 image_path,
-                output_path=hand_output,
-                num_hands=2
+                output_path=hand_output
             )
             print(f"     Hand detection complete")
         except Exception as e:
