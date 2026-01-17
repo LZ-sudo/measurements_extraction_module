@@ -1,6 +1,6 @@
 # Measurements Extraction Module
 
-This module provides tools for extracting body measurements from images using Google's Mediapipe library, ArUco marker-based calibration, and computer vision techniques. It includes landmark detection, segmentation, camera calibration, and robust measurement extraction capabilities for anthropometric analysis.
+This module provides tools for extracting body measurements from images using a hybrid approach combining RTMLib (for high-accuracy pose and hand detection) and Google MediaPipe (for segmentation and head width), with ArUco marker-based calibration for real-world scale conversion. It includes landmark detection, segmentation, camera calibration, and robust measurement extraction capabilities for anthropometric analysis.
 
 ## Module Structure
 
@@ -9,21 +9,25 @@ measurements_extraction_module/
 ├── .git/                          # Git repository
 ├── .gitignore                     # Git ignore patterns
 ├── .gitmodules                    # Git submodule configuration
-├── mediapipe_detection/           # Landmark detection and segmentation
-│   ├── pose_detection.py          # Body pose landmarks (33 points)
+├── mediapipe_detection/           # MediaPipe-based detection modules
+│   ├── head_detection.py          # Head width detection (ear landmarks)
 │   ├── face_detection.py          # Facial landmarks (478 points)
-│   ├── hand_detection.py          # Hand landmarks (21 points per hand)
+│   ├── hand_detection.py          # Hand landmarks (legacy, now using RTMLib)
 │   ├── hair_segmentation.py       # Hair segmentation with face detection
 │   └── body_segmentation.py       # Full-body segmentation
+├── rtmlib_detection/              # RTMLib-based detection modules
+│   ├── pose_detection.py          # Body pose detection (133 wholebody keypoints)
+│   └── hand_detection.py          # Hand detection from wholebody model
 ├── measurement_calibration/       # ArUco-based calibration system
 │   ├── calibrate_backdrop.py      # ArUco marker backdrop calibration
 │   ├── calibration_utils.py       # Calibration helper functions
 │   ├── calibration_config.py      # Calibration configuration
-│   └── camera_calibration.py      # Camera calibration utilities
+│   ├── camera_calibration.py      # Camera calibration utilities
+│   └── undistort_image.py         # Image undistortion utility
 ├── measurement_extraction/        # Measurement extraction tools
 │   ├── extract_measurements.py    # Main measurement extraction orchestrator
 │   └── measurement_extraction_utils.py  # Measurement calculation utilities
-├── mediapipe_task_files/          # Downloaded Mediapipe models
+├── mediapipe_task_files/          # Downloaded MediaPipe models
 ├── input_images/                  # Sample input images
 ├── outputs/                       # Generated outputs (JSON, images)
 ├── hair_classification_model/     # Hair classification submodule
@@ -38,13 +42,26 @@ measurements_extraction_module/
 
 ## Features Overview
 
+### Hybrid Detection Approach
+
+This module uses a strategic combination of two pose estimation libraries for optimal accuracy:
+
+| Detection Task | Library | Reason |
+|----------------|---------|--------|
+| Body pose (most measurements) | **RTMLib** | Higher accuracy with 133 wholebody keypoints |
+| Hand detection | **RTMLib** | Part of wholebody model, consistent results |
+| Head width (ear landmarks) | **MediaPipe** | Better ear landmark accuracy |
+| Body segmentation | **MediaPipe** | For head position in height measurement |
+| Hair segmentation | **MediaPipe** | For hair length measurement |
+
 ### Landmark Detection
-- **Pose Detection**: 33 body landmarks for comprehensive measurement extraction
-- **Hand Detection**: 21 landmarks per hand with handedness classification
+- **RTMLib Pose Detection**: 133 wholebody keypoints (COCO-WholeBody format) mapped to MediaPipe-compatible output
+- **MediaPipe Head Width**: Dedicated ear landmark detection for accurate head width measurement
+- **RTMLib Hand Detection**: Hand keypoints extracted from wholebody model
 
 ### Segmentation
 - **Hair Segmentation**: Combined with face detection for accurate hair boundary detection
-- **Body Segmentation**: Full-body isolation using selfie segmenter
+- **Body Segmentation**: Full-body isolation using MediaPipe selfie segmenter
 
 ### ArUco Marker-Based Calibration
 - **Robust Backdrop Calibration**: Sub-pixel accurate ArUco marker detection for scale extraction
@@ -54,10 +71,11 @@ measurements_extraction_module/
 - **Flexible Marker Positioning**: Configurable marker positions for different backdrop setups
 
 ### Measurements Extracted
-- **Height**: Full body height from floor to head top
+- **Height**: Full body height from floor to head top (uses heel landmarks + body segmentation)
 - **Hair Length**: Vertical hair measurement
 - **Width Measurements**: Head width, shoulder width, hip width
 - **Bilateral Measurements**: Upper/lower arm, upper/lower leg, shoulder-to-waist (averaged left/right)
+- **Hand Length**: Wrist to middle finger tip (averaged left/right)
 
 ## Installation
 
@@ -77,14 +95,17 @@ venv/Scripts/activate
 pip install -r requirements.txt
 ```
 
-### 2. Mediapipe Models
+### 2. Models
 
-Models are already included in repo:
-- `pose_landmarker_heavy.task` (~30MB)
-- `face_landmarker.task` (~10MB)
-- `hand_landmarker.task` (~10MB)
-- `hair_segmenter.tflite` (for hair segmentation)
-- `selfie_segmenter.tflite` (for body segmentation)
+**MediaPipe Models** (included in repo under `mediapipe_task_files/`):
+- `pose_landmarker_heavy.task` (~30MB) - Used for head width detection
+- `face_landmarker.task` (~10MB) - Used for hair segmentation
+- `hair_segmenter.tflite` - For hair segmentation
+- `selfie_segmenter.tflite` - For body segmentation
+
+**RTMLib Models** (auto-downloaded on first use):
+- RTMW Wholebody model - 133 keypoints for pose and hand detection
+- Models are cached locally after first download
 
 ## Quick Start
 
@@ -257,10 +278,17 @@ Contains detailed calibration data including:
 
 ## References
 
-- [Mediapipe Pose Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker/python)
-- [Mediapipe Face Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker/python)
-- [Mediapipe Hand Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/hand_landmarker/python)
-- [Mediapipe Image Segmentation](https://ai.google.dev/edge/mediapipe/solutions/vision/image_segmenter)
+### Pose Estimation Libraries
+- [RTMLib GitHub](https://github.com/Tau-J/rtmlib) - Real-time pose estimation library
+- [RTMPose Paper](https://arxiv.org/abs/2303.07399) - RTMPose: Real-Time Multi-Person Pose Estimation
+- [RTMW (Wholebody)](https://github.com/open-mmlab/mmpose/tree/main/projects/rtmpose) - 133 keypoint wholebody model
+
+### MediaPipe
+- [MediaPipe Pose Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker/python)
+- [MediaPipe Face Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker/python)
+- [MediaPipe Image Segmentation](https://ai.google.dev/edge/mediapipe/solutions/vision/image_segmenter)
+
+### Calibration
 - [OpenCV ArUco Marker Detection](https://docs.opencv.org/4.x/d5/dae/tutorial_aruco_detection.html)
 - [Camera Calibration with OpenCV](https://docs.opencv.org/4.x/dc/dbb/tutorial_py_calibration.html)
 - [Perspective Transformation (Homography)](https://docs.opencv.org/4.x/d9/dab/tutorial_homography.html)
