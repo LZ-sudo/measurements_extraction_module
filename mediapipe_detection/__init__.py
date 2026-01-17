@@ -6,7 +6,7 @@ This module provides:
 - Head width detection using MediaPipe Pose (landmarks 7 & 8)
 - Face detection for hair segmentation support
 
-Pose and hand detection for other body measurements use rtmlib_detection for higher accuracy.
+Pose and hand detection for other body measurements use vitpose_detection for higher accuracy.
 """
 
 from .hair_segmentation import HairSegmenter, segment_hair

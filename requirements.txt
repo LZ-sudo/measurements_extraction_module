@@ -3,7 +3,6 @@ opencv-python>=4.8.0
 opencv-contrib-python>=4.8.0
 numpy==2.2.6
 mediapipe>=0.10.3
-onnxruntime==1.23.2
 scipy>=1.10.0
 seaborn>=0.12.0
 

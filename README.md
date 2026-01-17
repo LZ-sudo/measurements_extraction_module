@@ -1,6 +1,6 @@
 # Measurements Extraction Module
 
-This module provides tools for extracting body measurements from images using Google's Mediapipe library, ArUco marker-based calibration, and computer vision techniques. It includes landmark detection, segmentation, camera calibration, and robust measurement extraction capabilities for anthropometric analysis.
+This module provides tools for extracting body measurements from images using easyViTPose (for high-accuracy pose detection), Google's Mediapipe library (for segmentation), ArUco marker-based calibration, and computer vision techniques. It includes landmark detection, segmentation, camera calibration, and robust measurement extraction capabilities for anthropometric analysis.
 
 ## Module Structure
 
@@ -9,12 +9,15 @@ measurements_extraction_module/
 ├── .git/                          # Git repository
 ├── .gitignore                     # Git ignore patterns
 ├── .gitmodules                    # Git submodule configuration
-├── mediapipe_detection/           # Landmark detection and segmentation
-│   ├── pose_detection.py          # Body pose landmarks (33 points)
-│   ├── face_detection.py          # Facial landmarks (478 points)
-│   ├── hand_detection.py          # Hand landmarks (21 points per hand)
+├── mediapipe_detection/           # Segmentation and head width detection
+│   ├── head_detection.py          # Head width via MediaPipe Pose (landmarks 7 & 8)
+│   ├── face_detection.py          # Face detection for hair segmentation
 │   ├── hair_segmentation.py       # Hair segmentation with face detection
 │   └── body_segmentation.py       # Full-body segmentation
+├── vitpose_detection/             # High-accuracy pose detection (easyViTPose)
+│   ├── config_model.py            # Model configuration and downloading
+│   ├── pose_detection.py          # Body pose landmarks (133 wholebody keypoints)
+│   └── hand_detection.py          # Hand landmarks (21 points per hand)
 ├── measurement_calibration/       # ArUco-based calibration system
 │   ├── calibrate_backdrop.py      # ArUco marker backdrop calibration
 │   ├── calibration_utils.py       # Calibration helper functions
@@ -38,13 +41,16 @@ measurements_extraction_module/
 
 ## Features Overview
 
-### Landmark Detection
-- **Pose Detection**: 33 body landmarks for comprehensive measurement extraction
-- **Hand Detection**: 21 landmarks per hand with handedness classification
+### Pose Detection (easyViTPose)
+- **High-Accuracy Pose Detection**: 133 wholebody keypoints using ViTPose-Huge model
+- **Hand Detection**: 21 landmarks per hand extracted from wholebody keypoints
+- **Automatic Model Download**: Models downloaded from Hugging Face Hub and cached locally
+- **Better Occlusion Handling**: Superior accuracy for challenging poses and clothing occlusion
 
-### Segmentation
+### Segmentation (MediaPipe)
 - **Hair Segmentation**: Combined with face detection for accurate hair boundary detection
 - **Body Segmentation**: Full-body isolation using selfie segmenter
+- **Head Width Detection**: Via MediaPipe Pose ear landmarks (7 & 8)
 
 ### ArUco Marker-Based Calibration
 - **Robust Backdrop Calibration**: Sub-pixel accurate ArUco marker detection for scale extraction
@@ -77,14 +83,19 @@ venv/Scripts/activate
 pip install -r requirements.txt
 ```
 
-### 2. Mediapipe Models
+### 2. Models
 
-Models are already included in repo:
-- `pose_landmarker_heavy.task` (~30MB)
-- `face_landmarker.task` (~10MB)
-- `hand_landmarker.task` (~10MB)
-- `hair_segmenter.tflite` (for hair segmentation)
-- `selfie_segmenter.tflite` (for body segmentation)
+**MediaPipe Models** (included in repo):
+- `pose_landmarker_heavy.task` (~30MB) - for head width detection
+- `face_landmarker.task` (~10MB) - for face detection
+- `hair_segmenter.tflite` - for hair segmentation
+- `selfie_segmenter.tflite` - for body segmentation
+
+**ViTPose Models** (downloaded automatically on first run):
+- `vitpose-h-wholebody.pth` (~350MB) - ViTPose-Huge for pose detection
+- `yolov8s.pt` (~22MB) - YOLOv8 for person detection
+
+Models are cached at `~/.cache/vitpose/` after download.
 
 ## Quick Start
 
@@ -257,9 +268,10 @@ Contains detailed calibration data including:
 
 ## References
 
+- [easyViTPose](https://github.com/JunkyByte/easy_ViTPose) - High-accuracy pose estimation
+- [ViTPose Paper](https://arxiv.org/abs/2204.12484) - Vision Transformer for Generic Body Pose Estimation
 - [Mediapipe Pose Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker/python)
 - [Mediapipe Face Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker/python)
-- [Mediapipe Hand Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/hand_landmarker/python)
 - [Mediapipe Image Segmentation](https://ai.google.dev/edge/mediapipe/solutions/vision/image_segmenter)
 - [OpenCV ArUco Marker Detection](https://docs.opencv.org/4.x/d5/dae/tutorial_aruco_detection.html)
 - [Camera Calibration with OpenCV](https://docs.opencv.org/4.x/dc/dbb/tutorial_py_calibration.html)
