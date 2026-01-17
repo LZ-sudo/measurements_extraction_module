@@ -23,9 +23,10 @@ from typing import Dict, Optional
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
-# Import MediaPipe detection modules (for segmentation)
+# Import MediaPipe detection modules (for segmentation and head width)
 from mediapipe_detection.body_segmentation import segment_body
 from mediapipe_detection.hair_segmentation import segment_hair
+from mediapipe_detection.head_detection import detect_head_width
 
 # Import RTMLib detection modules (for pose and hand - higher accuracy)
 from rtmlib_detection.pose_detection import detect_pose
@@ -169,6 +170,21 @@ class MeasurementExtractor:
         except Exception as e:
             print(f"     Pose detection failed: {e}")
             detections['pose'] = {}
+
+        # 3b. Head width detection using MediaPipe (better ear landmark accuracy)
+        print("  - Head width detection (MediaPipe)...")
+        try:
+            head_width_output = self._get_intermediate_path("head_width_detection")
+            head_width_data = detect_head_width(
+                image_path,
+                output_path=head_width_output
+            )
+            # Merge head_width into pose data
+            if head_width_data.get('head_width'):
+                detections['pose']['head_width'] = head_width_data['head_width']
+            print(f"     Head width detection complete")
+        except Exception as e:
+            print(f"     Head width detection failed: {e}")
 
         # 4. Hand detection using RTMLib RTMW (for hand length)
         print("  - Hand detection (RTMLib RTMW)...")

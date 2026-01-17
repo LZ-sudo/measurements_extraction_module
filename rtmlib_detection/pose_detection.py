@@ -115,12 +115,14 @@ class PoseDetector:
             'visibility': confidence
         }
 
-    def visualize(self, image: np.ndarray) -> np.ndarray:
+    def visualize(self, image: np.ndarray, kpt_thr: float = 0.3) -> np.ndarray:
         """
         Draw pose landmarks on the image for visualization.
+        Draws skeleton connections and landmark points with labels.
 
         Args:
             image: Input image as numpy array (BGR format).
+            kpt_thr: Minimum confidence threshold for drawing keypoints.
 
         Returns:
             Image with landmarks drawn on it.
@@ -129,10 +131,49 @@ class PoseDetector:
 
         keypoints, scores = self.wholebody(image)
 
-        if keypoints is not None and len(keypoints) > 0:
-            return draw_skeleton(image.copy(), keypoints, scores, kpt_thr=0.3)
+        if keypoints is None or len(keypoints) == 0:
+            return image.copy()
 
-        return image.copy()
+        # First draw skeleton using rtmlib
+        annotated_image = draw_skeleton(image.copy(), keypoints, scores, kpt_thr=kpt_thr)
+
+        # Then add landmark circles and labels for measurement-relevant keypoints
+        person_kpts = keypoints[0]
+        person_scores = scores[0] if scores is not None and len(scores) > 0 else np.zeros(133)
+
+        # Measurement-relevant keypoints with their names
+        # Format: (COCO-WholeBody index, MediaPipe index, name)
+        measurement_keypoints = [
+            (3, 7, "L_ear"),
+            (4, 8, "R_ear"),
+            (5, 11, "L_shoulder"),
+            (6, 12, "R_shoulder"),
+            (7, 13, "L_elbow"),
+            (8, 14, "R_elbow"),
+            (9, 15, "L_wrist"),
+            (10, 16, "R_wrist"),
+            (11, 23, "L_hip"),
+            (12, 24, "R_hip"),
+            (13, 25, "L_knee"),
+            (14, 26, "R_knee"),
+            (15, 27, "L_ankle"),
+            (16, 28, "R_ankle"),
+            (19, 29, "L_heel"),
+            (22, 30, "R_heel"),
+        ]
+
+        for coco_idx, mp_idx, name in measurement_keypoints:
+            if person_scores[coco_idx] >= kpt_thr:
+                x, y = int(person_kpts[coco_idx][0]), int(person_kpts[coco_idx][1])
+                # Draw filled circle
+                cv2.circle(annotated_image, (x, y), 6, (0, 255, 0), -1)
+                # Draw white outline
+                cv2.circle(annotated_image, (x, y), 6, (255, 255, 255), 1)
+                # Add label with MediaPipe index
+                cv2.putText(annotated_image, f"{mp_idx}", (x + 8, y - 8),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+
+        return annotated_image
 
     def detect(self, image: np.ndarray) -> Dict:
         """
@@ -165,12 +206,8 @@ class PoseDetector:
         def get_coords(idx: int) -> Dict[str, float]:
             return self._get_landmark_coords(person_kpts, person_scores, idx, h, w)
 
-        # Head width: COCO-WholeBody 3 (left ear) and 4 (right ear)
-        # Maps to MediaPipe landmark_7 and landmark_8
-        landmark_pairs["head_width"] = {
-            "landmark_7": get_coords(3),   # left_ear
-            "landmark_8": get_coords(4)    # right_ear
-        }
+        # Note: head_width uses MediaPipe pose detection for better accuracy
+        # See mediapipe_detection/pose_detection.py (HeadWidthDetector)
 
         # Shoulder width: COCO-WholeBody 5 (left shoulder) and 6 (right shoulder)
         # Maps to MediaPipe landmark_11 and landmark_12

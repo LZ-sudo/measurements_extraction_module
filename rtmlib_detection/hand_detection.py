@@ -143,24 +143,110 @@ class HandDetector:
         avg_confidence = self._get_hand_confidence(scores, start_idx)
         return avg_confidence >= self.min_hand_confidence
 
-    def visualize(self, image: np.ndarray) -> np.ndarray:
+    def visualize(self, image: np.ndarray, kpt_thr: float = 0.3) -> np.ndarray:
         """
         Draw hand landmarks on the image for visualization.
+        Only draws hand keypoints and connections, not the full body skeleton.
 
         Args:
             image: Input image as numpy array (BGR format).
+            kpt_thr: Minimum confidence threshold for drawing keypoints.
 
         Returns:
             Image with hand landmarks drawn on it.
         """
-        from rtmlib import draw_skeleton
+        h, w = image.shape[:2]
+        annotated_image = image.copy()
 
         keypoints, scores = self.wholebody(image)
 
-        if keypoints is not None and len(keypoints) > 0:
-            return draw_skeleton(image.copy(), keypoints, scores, kpt_thr=0.3)
+        if keypoints is None or len(keypoints) == 0:
+            return annotated_image
 
-        return image.copy()
+        person_kpts = keypoints[0]
+        person_scores = scores[0] if scores is not None and len(scores) > 0 else np.zeros(133)
+
+        # Hand connection pairs (finger bones)
+        hand_connections = [
+            (0, 1), (1, 2), (2, 3), (3, 4),    # Thumb
+            (0, 5), (5, 6), (6, 7), (7, 8),    # Index
+            (0, 9), (9, 10), (10, 11), (11, 12),  # Middle
+            (0, 13), (13, 14), (14, 15), (15, 16),  # Ring
+            (0, 17), (17, 18), (18, 19), (19, 20),  # Pinky
+            (5, 9), (9, 13), (13, 17)  # Palm connections
+        ]
+
+        # Colors for each hand
+        left_color = (255, 128, 0)   # Orange for left hand
+        right_color = (0, 128, 255)  # Blue for right hand
+
+        # Draw left hand if detected
+        if self._is_hand_detected(person_scores, LEFT_HAND_START):
+            self._draw_hand(
+                annotated_image, person_kpts, person_scores,
+                LEFT_HAND_START, hand_connections, left_color, kpt_thr
+            )
+            # Add label
+            wrist_idx = LEFT_HAND_START
+            wrist_x, wrist_y = int(person_kpts[wrist_idx][0]), int(person_kpts[wrist_idx][1])
+            cv2.putText(annotated_image, "Left", (wrist_x - 30, wrist_y - 15),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, left_color, 2)
+
+        # Draw right hand if detected
+        if self._is_hand_detected(person_scores, RIGHT_HAND_START):
+            self._draw_hand(
+                annotated_image, person_kpts, person_scores,
+                RIGHT_HAND_START, hand_connections, right_color, kpt_thr
+            )
+            # Add label
+            wrist_idx = RIGHT_HAND_START
+            wrist_x, wrist_y = int(person_kpts[wrist_idx][0]), int(person_kpts[wrist_idx][1])
+            cv2.putText(annotated_image, "Right", (wrist_x - 30, wrist_y - 15),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, right_color, 2)
+
+        return annotated_image
+
+    def _draw_hand(
+        self,
+        image: np.ndarray,
+        keypoints: np.ndarray,
+        scores: np.ndarray,
+        start_idx: int,
+        connections: list,
+        color: tuple,
+        kpt_thr: float
+    ):
+        """
+        Draw a single hand's landmarks and connections.
+
+        Args:
+            image: Image to draw on (modified in place).
+            keypoints: All keypoints array.
+            scores: All scores array.
+            start_idx: Starting index for this hand (91 for left, 112 for right).
+            connections: List of (start, end) tuples for bone connections.
+            color: BGR color tuple for this hand.
+            kpt_thr: Minimum confidence threshold.
+        """
+        # Draw connections (bones)
+        for start, end in connections:
+            idx1 = start_idx + start
+            idx2 = start_idx + end
+
+            if scores[idx1] >= kpt_thr and scores[idx2] >= kpt_thr:
+                pt1 = (int(keypoints[idx1][0]), int(keypoints[idx1][1]))
+                pt2 = (int(keypoints[idx2][0]), int(keypoints[idx2][1]))
+                cv2.line(image, pt1, pt2, color, 2)
+
+        # Draw keypoints as circles
+        for i in range(HAND_KEYPOINT_COUNT):
+            idx = start_idx + i
+            if scores[idx] >= kpt_thr:
+                x, y = int(keypoints[idx][0]), int(keypoints[idx][1])
+                # Larger circle for wrist and fingertips
+                radius = 5 if i in [0, 4, 8, 12, 16, 20] else 3
+                cv2.circle(image, (x, y), radius, color, -1)
+                cv2.circle(image, (x, y), radius, (255, 255, 255), 1)  # White outline
 
     def detect(self, image: np.ndarray) -> Dict:
         """
