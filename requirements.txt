@@ -3,10 +3,16 @@ opencv-python>=4.8.0
 opencv-contrib-python>=4.8.0
 numpy==2.2.6
 mediapipe>=0.10.3
-rtmlib==0.0.13
 onnxruntime==1.23.2
 scipy>=1.10.0
 seaborn>=0.12.0
+
+# pose estimation (easyViTPose)
+easy_ViTPose @ git+https://github.com/JunkyByte/easy_ViTPose.git
+huggingface_hub>=0.20.0
+ultralytics==8.4.5
+scikit-image==0.26.0
+ffmpeg==1.4
 
 # hair classification model requirements
 torch>=2.0.0

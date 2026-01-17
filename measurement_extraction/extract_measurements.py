@@ -3,7 +3,7 @@ Measurement Extraction Orchestrator
 
 This script orchestrates the complete measurement extraction process:
 1. Runs detection scripts to extract landmark coordinates:
-   - RTMLib (RTMW) for pose and hand detection (higher accuracy)
+   - ViTPose for pose and hand detection (highest accuracy)
    - MediaPipe for body and hair segmentation
 2. Loads calibration data from backdrop calibration
 3. Converts normalized coordinates to real-world measurements in cm
@@ -28,9 +28,9 @@ from mediapipe_detection.body_segmentation import segment_body
 from mediapipe_detection.hair_segmentation import segment_hair
 from mediapipe_detection.head_detection import detect_head_width
 
-# Import RTMLib detection modules (for pose and hand - higher accuracy)
-from rtmlib_detection.pose_detection import detect_pose
-from rtmlib_detection.hand_detection import detect_hands
+# Import ViTPose detection modules (for pose and hand - highest accuracy)
+from vitpose_detection.pose_detection import detect_pose
+from vitpose_detection.hand_detection import detect_hands
 
 # Import measurement utilities
 from measurement_extraction.measurement_extraction_utils import (
@@ -119,7 +119,7 @@ class MeasurementExtractor:
     def run_detections(self, image_path: str) -> Dict:
         """
         Run all detection scripts and collect landmark data.
-        Uses RTMLib for pose/hand detection and MediaPipe for segmentation.
+        Uses ViTPose for pose/hand detection and MediaPipe for segmentation.
 
         Args:
             image_path: Path to the image to process (original or undistorted)
@@ -127,7 +127,7 @@ class MeasurementExtractor:
         Returns:
             Dictionary containing all detection results
         """
-        print("Running detections (RTMLib + MediaPipe)...")
+        print("Running detections (ViTPose + MediaPipe)...")
 
         detections = {}
 
@@ -158,8 +158,8 @@ class MeasurementExtractor:
             print(f"     Hair segmentation failed: {e}")
             detections['hair'] = {}
 
-        # 3. Pose detection using RTMLib RTMW (for body measurements)
-        print("  - Pose detection (RTMLib RTMW)...")
+        # 3. Pose detection using ViTPose (for body measurements)
+        print("  - Pose detection (ViTPose)...")
         try:
             pose_output = self._get_intermediate_path("pose_detection")
             detections['pose'] = detect_pose(
@@ -186,8 +186,8 @@ class MeasurementExtractor:
         except Exception as e:
             print(f"     Head width detection failed: {e}")
 
-        # 4. Hand detection using RTMLib RTMW (for hand length)
-        print("  - Hand detection (RTMLib RTMW)...")
+        # 4. Hand detection using ViTPose (for hand length)
+        print("  - Hand detection (ViTPose)...")
         try:
             hand_output = self._get_intermediate_path("hand_detection")
             detections['hands'] = detect_hands(
