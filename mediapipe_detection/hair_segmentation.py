@@ -168,6 +168,10 @@ class HairSegmenter:
             category_mask = segmentation_result.category_mask
             mask_array = category_mask.numpy_view()
 
+            # Squeeze extra dimensions if present (some models return (H, W, 1))
+            if mask_array.ndim == 3:
+                mask_array = np.squeeze(mask_array, axis=-1)
+
             # Create binary mask for head region
             head_mask = (mask_array > 0.5).astype(np.uint8)
 
@@ -182,6 +186,10 @@ class HairSegmenter:
             segmentation_result = self.segmenter.segment(mp_image)
             category_mask = segmentation_result.category_mask
             mask_array = category_mask.numpy_view()
+
+            # Squeeze extra dimensions if present (some models return (H, W, 1))
+            if mask_array.ndim == 3:
+                mask_array = np.squeeze(mask_array, axis=-1)
 
             # Create binary mask
             full_mask = (mask_array > 0.5).astype(np.uint8)
@@ -249,6 +257,10 @@ class HairSegmenter:
             category_mask = segmentation_result.category_mask
             mask_array = category_mask.numpy_view()
 
+            # Squeeze extra dimensions if present (some models return (H, W, 1))
+            if mask_array.ndim == 3:
+                mask_array = np.squeeze(mask_array, axis=-1)
+
             # Create binary mask for head region
             head_mask = (mask_array > 0.5).astype(np.uint8)
 
@@ -272,6 +284,10 @@ class HairSegmenter:
             segmentation_result = self.segmenter.segment(mp_image)
             category_mask = segmentation_result.category_mask
             mask_array = category_mask.numpy_view()
+
+            # Squeeze extra dimensions if present (some models return (H, W, 1))
+            if mask_array.ndim == 3:
+                mask_array = np.squeeze(mask_array, axis=-1)
 
             # Create binary mask
             full_mask = (mask_array > 0.5).astype(np.uint8)

@@ -10,9 +10,8 @@ import cv2
 import mediapipe as mp
 import numpy as np
 import json
-from typing import Dict, Optional, List, Tuple
-from mediapipe import solutions
-from mediapipe.framework.formats import landmark_pb2
+from typing import Dict, Optional, List
+import os
 
 
 class FaceDetector:
@@ -129,7 +128,7 @@ class FaceDetector:
 
     def visualize(self, image: np.ndarray) -> np.ndarray:
         """
-        Draw face mesh landmarks on the image for visualization.
+        Draw face mesh landmarks on the image for visualization using OpenCV.
 
         Args:
             image: Input image as numpy array (BGR format).
@@ -148,41 +147,60 @@ class FaceDetector:
 
         # Create a copy of the image for annotation
         annotated_image = image.copy()
+        h, w = image.shape[:2]
 
         # Draw face mesh landmarks if detected
         if results.face_landmarks:
             for face_landmarks in results.face_landmarks:
-                # Convert to landmark_pb2 format for drawing
-                face_landmarks_proto = landmark_pb2.NormalizedLandmarkList()
-                face_landmarks_proto.landmark.extend([
-                    landmark_pb2.NormalizedLandmark(x=landmark.x, y=landmark.y, z=landmark.z)
-                    for landmark in face_landmarks
-                ])
+                # Draw all landmark points
+                for idx, lm in enumerate(face_landmarks):
+                    cx, cy = int(lm.x * w), int(lm.y * h)
+                    # Small green dots for face mesh
+                    cv2.circle(annotated_image, (cx, cy), 1, (0, 255, 0), -1)
 
-                # Draw tesselation
-                solutions.drawing_utils.draw_landmarks(
-                    image=annotated_image,
-                    landmark_list=face_landmarks_proto,
-                    connections=solutions.face_mesh.FACEMESH_TESSELATION,
-                    landmark_drawing_spec=None,
-                    connection_drawing_spec=solutions.drawing_styles.get_default_face_mesh_tesselation_style()
-                )
-                # Draw contours
-                solutions.drawing_utils.draw_landmarks(
-                    image=annotated_image,
-                    landmark_list=face_landmarks_proto,
-                    connections=solutions.face_mesh.FACEMESH_CONTOURS,
-                    landmark_drawing_spec=None,
-                    connection_drawing_spec=solutions.drawing_styles.get_default_face_mesh_contours_style()
-                )
-                # Draw irises
-                solutions.drawing_utils.draw_landmarks(
-                    image=annotated_image,
-                    landmark_list=face_landmarks_proto,
-                    connections=solutions.face_mesh.FACEMESH_IRISES,
-                    landmark_drawing_spec=None,
-                    connection_drawing_spec=solutions.drawing_styles.get_default_face_mesh_iris_connections_style()
-                )
+                # Draw face contour connections (simplified)
+                # Key contour indices for face outline
+                face_oval = [
+                    10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288,
+                    397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136,
+                    172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109, 10
+                ]
+                # Draw face oval
+                for i in range(len(face_oval) - 1):
+                    pt1_idx, pt2_idx = face_oval[i], face_oval[i + 1]
+                    pt1 = (int(face_landmarks[pt1_idx].x * w), int(face_landmarks[pt1_idx].y * h))
+                    pt2 = (int(face_landmarks[pt2_idx].x * w), int(face_landmarks[pt2_idx].y * h))
+                    cv2.line(annotated_image, pt1, pt2, (200, 200, 200), 1)
+
+                # Draw lips
+                lips_upper = [61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291]
+                lips_lower = [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291]
+                for lip_contour in [lips_upper, lips_lower]:
+                    for i in range(len(lip_contour) - 1):
+                        pt1_idx, pt2_idx = lip_contour[i], lip_contour[i + 1]
+                        pt1 = (int(face_landmarks[pt1_idx].x * w), int(face_landmarks[pt1_idx].y * h))
+                        pt2 = (int(face_landmarks[pt2_idx].x * w), int(face_landmarks[pt2_idx].y * h))
+                        cv2.line(annotated_image, pt1, pt2, (0, 0, 255), 1)
+
+                # Draw eyes
+                left_eye = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246, 33]
+                right_eye = [362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398, 362]
+                for eye_contour in [left_eye, right_eye]:
+                    for i in range(len(eye_contour) - 1):
+                        pt1_idx, pt2_idx = eye_contour[i], eye_contour[i + 1]
+                        pt1 = (int(face_landmarks[pt1_idx].x * w), int(face_landmarks[pt1_idx].y * h))
+                        pt2 = (int(face_landmarks[pt2_idx].x * w), int(face_landmarks[pt2_idx].y * h))
+                        cv2.line(annotated_image, pt1, pt2, (255, 200, 0), 1)
+
+                # Draw eyebrows
+                left_eyebrow = [70, 63, 105, 66, 107, 55, 65, 52, 53, 46]
+                right_eyebrow = [300, 293, 334, 296, 336, 285, 295, 282, 283, 276]
+                for brow_contour in [left_eyebrow, right_eyebrow]:
+                    for i in range(len(brow_contour) - 1):
+                        pt1_idx, pt2_idx = brow_contour[i], brow_contour[i + 1]
+                        pt1 = (int(face_landmarks[pt1_idx].x * w), int(face_landmarks[pt1_idx].y * h))
+                        pt2 = (int(face_landmarks[pt2_idx].x * w), int(face_landmarks[pt2_idx].y * h))
+                        cv2.line(annotated_image, pt1, pt2, (150, 100, 50), 1)
 
         return annotated_image
 
