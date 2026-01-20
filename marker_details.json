@@ -1,0 +1,28 @@
+{
+  "marker_size_cm": 16.4,
+  "marker_positions_cm": {
+    "top_left": {
+      "x": 0.0,
+      "y": 203.2
+    },
+    "top_right": {
+      "x": 83.0,
+      "y": 203.2
+    },
+    "bottom_left": {
+      "x": 0.0,
+      "y": 8.2
+    },
+    "bottom_right": {
+      "x": 83.0,
+      "y": 8.2
+    }
+  },
+  "_comment": "Marker details file for ArUco backdrop calibration",
+  "_explanation": {
+    "marker_size_cm": "Physical size of printed ArUco markers in cm",
+    "marker_positions_cm": "Physical positions of marker centers in cm from floor",
+    "horizontal": "x values represent horizontal position in cm (0cm = left edge)",
+    "vertical": "y values represent vertical position in cm from floor"
+  }
+}
