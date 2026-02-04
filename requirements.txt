@@ -29,3 +29,6 @@ matplotlib>=3.7.0
 
 # aruco marker requirements
 reportlab==4.4.9
+
+#gdrive autoinstall for YoloV8 head detection weight files
+gdown>=5.0.0
