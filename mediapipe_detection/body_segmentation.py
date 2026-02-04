@@ -26,7 +26,7 @@ class BodySegmenter:
 
         Args:
             model_path: Path to selfie segmentation model (.tflite file).
-                       If None, looks for selfie_segmenter.tflite in mediapipe_task_files.
+                       If None, looks for selfie_segmenter.tflite in weight_files.
         """
         from mediapipe.tasks import python
         from mediapipe.tasks.python import vision
@@ -35,7 +35,7 @@ class BodySegmenter:
         if model_path is None:
             task_files_path = os.path.join(
                 os.path.dirname(os.path.dirname(__file__)),
-                "mediapipe_task_files",
+                "weight_files",
                 "selfie_segmenter.tflite"
             )
             if os.path.exists(task_files_path):

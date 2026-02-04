@@ -26,7 +26,7 @@ measurements_extraction_module/
 ├── measurement_extraction/        # Measurement extraction tools
 │   ├── extract_measurements.py    # Main measurement extraction orchestrator
 │   └── measurement_extraction_utils.py  # Measurement calculation utilities
-├── mediapipe_task_files/          # Downloaded Mediapipe models
+├── weight_files/          # Downloaded models weights
 ├── input_images/                  # Sample input images
 ├── outputs/                       # Generated outputs (JSON, images)
 ├── hair_classification_model/     # Hair classification submodule

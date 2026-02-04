@@ -58,10 +58,10 @@ class HeadWidthDetector:
 
     def _get_default_model(self) -> str:
         """Get the default pose landmarker model path."""
-        # Check in mediapipe_task_files directory first
+        # Check in weight_files directory first
         task_files_path = os.path.join(
             os.path.dirname(os.path.dirname(__file__)),
-            "mediapipe_task_files",
+            "weight_files",
             "pose_landmarker_heavy.task"
         )
 

@@ -27,7 +27,7 @@ class HairSegmenter:
 
         Args:
             model_path: Path to hair segmentation model (.tflite file).
-                       If None, looks for hair_segmenter.tflite in mediapipe_task_files.
+                       If None, looks for hair_segmenter.tflite in weight_files.
             use_face_detection: Whether to use face detection to locate head region first.
                               This significantly improves accuracy for full-body images.
         """
@@ -40,7 +40,7 @@ class HairSegmenter:
         if use_face_detection:
             face_model_path = os.path.join(
                 os.path.dirname(os.path.dirname(__file__)),
-                "mediapipe_task_files",
+                "weight_files",
                 "face_landmarker.task"
             )
             if os.path.exists(face_model_path):
@@ -62,7 +62,7 @@ class HairSegmenter:
         if model_path is None:
             task_files_path = os.path.join(
                 os.path.dirname(os.path.dirname(__file__)),
-                "mediapipe_task_files",
+                "weight_files",
                 "hair_segmenter.tflite"
             )
             if os.path.exists(task_files_path):

@@ -61,8 +61,8 @@ class FaceDetector:
         """Get the default face landmarker model path."""
         import os
 
-        # Check in mediapipe_task_files directory first
-        task_files_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "mediapipe_task_files", "face_landmarker.task")
+        # Check in weight_files directory first
+        task_files_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "weight_files", "face_landmarker.task")
 
         if os.path.exists(task_files_path):
             return task_files_path
