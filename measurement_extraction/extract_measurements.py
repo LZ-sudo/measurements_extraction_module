@@ -3,8 +3,9 @@ Measurement Extraction Orchestrator
 
 This script orchestrates the complete measurement extraction process:
 1. Runs detection scripts to extract landmark coordinates:
+   - YOLOv8 for head detection (accurate head top for height measurement)
    - ViTPose for pose and hand detection (highest accuracy)
-   - MediaPipe for body and hair segmentation
+   - MediaPipe for hair segmentation and head width
 2. Loads calibration data from backdrop calibration
 3. Converts normalized coordinates to real-world measurements in cm
 4. Outputs separate JSON files for hair and body measurements
@@ -149,20 +150,7 @@ class MeasurementExtractor:
             print(f"     Head detection failed: {e}")
             detections['head'] = {}
 
-        # 2. Body segmentation (for body mask, NOT used for height)
-        print("  - Body segmentation...")
-        try:
-            body_output = self._get_intermediate_path("body_detection")
-            detections['body'] = segment_body(
-                image_path,
-                output_path=body_output
-            )
-            print(f"     Body segmentation complete")
-        except Exception as e:
-            print(f"     Body segmentation failed: {e}")
-            detections['body'] = {}
-
-        # 4. Hair segmentation (for hair length)
+        # 2. Hair segmentation (for hair length)
         print("  - Hair segmentation...")
         try:
             hair_output = self._get_intermediate_path("hair_segmentation")
@@ -176,7 +164,7 @@ class MeasurementExtractor:
             print(f"     Hair segmentation failed: {e}")
             detections['hair'] = {}
 
-        # 5. Pose detection using ViTPose (for body measurements)
+        # 3. Pose detection using ViTPose (for body measurements)
         print("  - Pose detection (ViTPose)...")
         try:
             pose_output = self._get_intermediate_path("pose_detection")
@@ -189,7 +177,7 @@ class MeasurementExtractor:
             print(f"     Pose detection failed: {e}")
             detections['pose'] = {}
 
-        # 5b. Head width detection using MediaPipe (better ear landmark accuracy)
+        # 4. Head width detection using MediaPipe (better ear landmark accuracy)
         print("  - Head width detection (MediaPipe)...")
         try:
             head_width_output = self._get_intermediate_path("head_width_detection")
@@ -204,7 +192,7 @@ class MeasurementExtractor:
         except Exception as e:
             print(f"     Head width detection failed: {e}")
 
-        # 6. Hand detection using ViTPose (for hand length)
+        # 5. Hand detection using ViTPose (for hand length)
         print("  - Hand detection (ViTPose)...")
         try:
             hand_output = self._get_intermediate_path("hand_detection")

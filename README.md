@@ -10,23 +10,25 @@ measurements_extraction_module/
 ├── .gitignore                     # Git ignore patterns
 ├── .gitmodules                    # Git submodule configuration
 ├── mediapipe_detection/           # Segmentation and head width detection
-│   ├── head_detection.py          # Head width via MediaPipe Pose (landmarks 7 & 8)
+│   ├── head_detection.py          # Head width via MediaPipe Pose (ear landmarks)
 │   ├── face_detection.py          # Face detection for hair segmentation
-│   ├── hair_segmentation.py       # Hair segmentation with face detection
-│   └── body_segmentation.py       # Full-body segmentation
+│   └── hair_segmentation.py       # Hair segmentation with face detection
 ├── vitpose_detection/             # High-accuracy pose detection (easyViTPose)
 │   ├── config_model.py            # Model configuration and downloading
 │   ├── pose_detection.py          # Body pose landmarks (133 wholebody keypoints)
 │   └── hand_detection.py          # Hand landmarks (21 points per hand)
+├── yolov8_detection/              # YOLOv8-based head detection for height
+│   └── head_detection.py          # Head bounding box detection (CrowdHuman)
 ├── measurement_calibration/       # ArUco-based calibration system
 │   ├── calibrate_backdrop.py      # ArUco marker backdrop calibration
 │   ├── calibration_utils.py       # Calibration helper functions
 │   ├── calibration_config.py      # Calibration configuration
-│   └── camera_calibration.py      # Camera calibration utilities
+│   ├── camera_calibration.py      # Camera calibration utilities
+│   └── undistort_image.py         # Image undistortion using calibration
 ├── measurement_extraction/        # Measurement extraction tools
 │   ├── extract_measurements.py    # Main measurement extraction orchestrator
 │   └── measurement_extraction_utils.py  # Measurement calculation utilities
-├── weight_files/          # Downloaded models weights
+├── weight_files/                  # Model weight files
 ├── input_images/                  # Sample input images
 ├── outputs/                       # Generated outputs (JSON, images)
 ├── hair_classification_model/     # Hair classification submodule
@@ -47,9 +49,14 @@ measurements_extraction_module/
 - **Automatic Model Download**: Models downloaded from Hugging Face Hub and cached locally
 - **Better Occlusion Handling**: Superior accuracy for challenging poses and clothing occlusion
 
+### Head Detection for Height (YOLOv8)
+- **Accurate Head Top Detection**: YOLOv8 model trained on CrowdHuman dataset for reliable head bounding box detection
+- **Hair-Invariant Height Measurement**: Uses head bounding box top edge instead of body segmentation, providing consistent results regardless of hair volume
+- **Automatic Model Download**: Model downloaded from Google Drive on first run and cached in `weight_files/`
+- Model source: [Owen718/Head-Detection-Yolov8](https://github.com/Owen718/Head-Detection-Yolov8)
+
 ### Segmentation (MediaPipe)
 - **Hair Segmentation**: Combined with face detection for accurate hair boundary detection
-- **Body Segmentation**: Full-body isolation using selfie segmenter
 - **Head Width Detection**: Via MediaPipe Pose ear landmarks (7 & 8)
 
 ### ArUco Marker-Based Calibration
@@ -60,10 +67,11 @@ measurements_extraction_module/
 - **Flexible Marker Positioning**: Configurable marker positions for different backdrop setups
 
 ### Measurements Extracted
-- **Height**: Full body height from floor to head top
+- **Height**: Full body height from heel landmarks to head top (using YOLOv8 head detection)
 - **Hair Length**: Vertical hair measurement
 - **Width Measurements**: Head width, shoulder width, hip width
 - **Bilateral Measurements**: Upper/lower arm, upper/lower leg, shoulder-to-waist (averaged left/right)
+- **Hand Length**: Wrist to middle fingertip distance
 
 ## Installation
 
@@ -85,17 +93,20 @@ pip install -r requirements.txt
 
 ### 2. Models
 
-**MediaPipe Models** (included in repo):
+**MediaPipe Models** (included in `weight_files/`):
 - `pose_landmarker_heavy.task` (~30MB) - for head width detection
 - `face_landmarker.task` (~10MB) - for face detection
 - `hair_segmenter.tflite` - for hair segmentation
-- `selfie_segmenter.tflite` - for body segmentation
+
+**YOLOv8 Head Detection Model** (downloaded automatically on first run to `weight_files/`):
+- `best.pt` (~130MB) - YOLOv8 model trained on CrowdHuman for head detection
+- Source: [Owen718/Head-Detection-Yolov8](https://github.com/Owen718/Head-Detection-Yolov8)
 
 **ViTPose Models** (downloaded automatically on first run):
 - `vitpose-h-wholebody.pth` (~350MB) - ViTPose-Huge for pose detection
 - `yolov8s.pt` (~22MB) - YOLOv8 for person detection
 
-Models are cached at `~/.cache/vitpose/` after download.
+ViTPose models are cached at `~/.cache/vitpose/` after download.
 
 ## Quick Start
 
@@ -270,6 +281,7 @@ Contains detailed calibration data including:
 
 - [easyViTPose](https://github.com/JunkyByte/easy_ViTPose) - High-accuracy pose estimation
 - [ViTPose Paper](https://arxiv.org/abs/2204.12484) - Vision Transformer for Generic Body Pose Estimation
+- [Head-Detection-Yolov8](https://github.com/Owen718/Head-Detection-Yolov8) - YOLOv8 head detection model trained on CrowdHuman dataset
 - [Mediapipe Pose Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker/python)
 - [Mediapipe Face Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker/python)
 - [Mediapipe Image Segmentation](https://ai.google.dev/edge/mediapipe/solutions/vision/image_segmenter)

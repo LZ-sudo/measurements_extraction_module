@@ -3,18 +3,18 @@
   "marker_positions_cm": {
     "top_left": {
       "x": 0.0,
-      "y": 203.2
+      "y": 197.2
     },
     "top_right": {
-      "x": 83.0,
-      "y": 203.2
+      "x": 100.0,
+      "y": 197.2
     },
     "bottom_left": {
       "x": 0.0,
       "y": 8.2
     },
     "bottom_right": {
-      "x": 83.0,
+      "x": 100.0,
       "y": 8.2
     }
   },
