@@ -18,7 +18,7 @@ from pathlib import Path
 # Add current directory to path for imports
 sys.path.insert(0, os.path.dirname(__file__))
 
-from camera_calibration import CameraCalibrator
+from measurement_calibration.camera_calibration import CameraCalibrator
 
 
 def undistort_image(
