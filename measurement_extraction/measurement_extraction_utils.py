@@ -93,19 +93,19 @@ def cleanup_temporary_image(temp_image_path: Optional[str]):
 # ============================================================================
 
 def measure_height_in_pixels(
-    body_data: Dict,
+    head_data: Dict,
     pose_data: Optional[Dict],
     image_height: int
 ) -> Optional[float]:
     """
-    Measure subject height in pixels from body segmentation and pose data.
+    Measure subject height in pixels from YOLOv8 head detection and pose data.
 
-    Uses body segmentation for the top (head) and pose heel landmarks for the
-    bottom (feet). This is used to calculate the plane shift factor for depth
-    correction.
+    Uses YOLOv8 head detection for the top (head bounding box top edge) and
+    pose heel landmarks for the bottom (feet). This is used to calculate the
+    plane shift factor for depth correction.
 
     Args:
-        body_data: Body detection data containing height information
+        head_data: YOLOv8 head detection data with head_top_y
         pose_data: Pose detection data with heel landmarks
         image_height: Image height in pixels
 
@@ -113,17 +113,17 @@ def measure_height_in_pixels(
         Height in pixels, or None if data is invalid
     """
     try:
-        height_info = body_data.get('height', {})
-        y_top = height_info.get('top', {}).get('y')
-        y_bottom_seg = height_info.get('bottom', {}).get('y')
-
-        if y_top is None or y_bottom_seg is None:
+        # Get head top from YOLOv8 head detection
+        if not head_data or not head_data.get('head_detected'):
+            print("  WARNING: No head detected, cannot measure height in pixels")
             return None
 
-        # Use segmentation bottom as default
-        y_bottom = y_bottom_seg
+        y_top = head_data.get('head_top_y')
+        if y_top is None:
+            return None
 
-        # Prefer heel landmarks if available (more accurate)
+        # Get feet position from heel landmarks
+        y_bottom = None
         if pose_data and 'heel_landmarks' in pose_data:
             heel_data = pose_data['heel_landmarks']
             left_heel = heel_data.get('left')
@@ -131,6 +131,10 @@ def measure_height_in_pixels(
 
             if left_heel and right_heel:
                 y_bottom = (left_heel['y'] + right_heel['y']) / 2
+
+        if y_bottom is None:
+            print("  WARNING: No heel landmarks available, cannot measure height in pixels")
+            return None
 
         # Convert normalized coordinates to pixels
         height_pixels = abs(y_bottom - y_top) * image_height
@@ -172,7 +176,7 @@ def apply_calibration_shift(
     calibration_data: Dict,
     shift_factor: float,
     known_height_cm: float,
-    body_data: Optional[Dict] = None,
+    head_data: Optional[Dict] = None,
     pose_data: Optional[Dict] = None,
     image_path: Optional[str] = None,
     iterate: bool = True,
@@ -193,7 +197,7 @@ def apply_calibration_shift(
         calibration_data: Original calibration data from ArUco backdrop calibration
         shift_factor: Initial shift factor from calculate_shift_factor()
         known_height_cm: Subject's known height (stored for reference)
-        body_data: Body detection data (required if iterate=True)
+        head_data: YOLOv8 head detection data (required if iterate=True)
         pose_data: Pose detection data (required if iterate=True)
         image_path: Path to image (required if iterate=True)
         iterate: Whether to perform iterative refinement (default: False)
@@ -205,7 +209,7 @@ def apply_calibration_shift(
     """
 
     # Perform iterative refinement if requested
-    if iterate and body_data is not None and image_path is not None:
+    if iterate and head_data is not None and image_path is not None:
         print(f"\n   Iterative plane shift refinement:")
 
         for iteration in range(max_iterations):
@@ -220,7 +224,7 @@ def apply_calibration_shift(
             # Measure height using perspective-corrected method
             # extract_height is defined later in this file, so we call it directly
             measured_height_cm = extract_height(
-                body_data, temp_calibration, image_path, pose_data
+                head_data, temp_calibration, image_path, pose_data
             )
 
             if measured_height_cm is None:
@@ -491,19 +495,20 @@ def calculate_2d_distance(
 
 
 def extract_height(
-    body_data: Dict,
+    head_data: Dict,
     calibration_data: Dict,
     image_path: str,
     pose_data: Optional[Dict] = None
 ) -> Optional[float]:
     """
-    Extract height measurement from body detection data with perspective correction.
+    Extract height measurement using YOLOv8 head detection and pose heel landmarks.
 
-    Uses body segmentation for the top (head) and pose heel landmarks for the bottom (feet).
-    This hybrid approach avoids including floor in the measurement while maintaining accuracy.
+    Uses YOLOv8 head detection for the top (head bounding box top edge) and
+    pose heel landmarks for the bottom (feet). This approach provides consistent
+    head top detection regardless of hair volume.
 
     Args:
-        body_data: Body detection data containing height information
+        head_data: YOLOv8 head detection data with head_top_y
         calibration_data: Calibration data with backdrop_corners and cm_per_normalized_unit
         image_path: Path to the image (needed for dimensions)
         pose_data: Optional pose detection data with heel landmarks for feet position
@@ -512,36 +517,42 @@ def extract_height(
         Height in centimeters, or None if data is invalid
     """
     try:
-        height_info = body_data.get('height', {})
-        y_top = height_info.get('top', {}).get('y')
-        y_bottom_seg = height_info.get('bottom', {}).get('y')
-
-        if y_top is None or y_bottom_seg is None:
+        # Get head top from YOLOv8 head detection
+        if not head_data or not head_data.get('head_detected'):
+            print("  ERROR: No head detected - cannot extract height")
             return None
 
-        # Use segmentation bottom as default, but prefer heel landmarks if available
-        y_bottom = y_bottom_seg
-        x_bottom = height_info.get('bottom', {}).get('x', 0.5)
+        y_top = head_data.get('head_top_y')
+        if y_top is None:
+            print("  ERROR: head_top_y not available")
+            return None
 
-        # Try to get more accurate foot position from pose heel landmarks
+        # Get x-coordinate from head bounding box center
+        head_bbox = head_data.get('head_bbox', {})
+        x_top = (head_bbox.get('x1', 0.5) + head_bbox.get('x2', 0.5)) / 2
+
+        print(f"  Using YOLOv8 head detection for head top (y={y_top:.4f})")
+
+        # Get feet position from heel landmarks
+        y_bottom = None
+        x_bottom = 0.5
+
         if pose_data and 'heel_landmarks' in pose_data:
             heel_data = pose_data['heel_landmarks']
             left_heel = heel_data.get('left')
             right_heel = heel_data.get('right')
 
             if left_heel and right_heel:
-                # Use average of both heels for more robust measurement
                 y_bottom = (left_heel['y'] + right_heel['y']) / 2
                 x_bottom = (left_heel['x'] + right_heel['x']) / 2
                 print(f"  Using pose heel landmarks for feet position (y={y_bottom:.4f})")
-                print(f"  Segmentation bottom was at y={y_bottom_seg:.4f}")
             else:
-                print(f"  WARNING: Heel landmarks incomplete, using segmentation bottom")
+                print(f"  ERROR: Heel landmarks incomplete - cannot extract height")
+                return None
         else:
-            print(f"  WARNING: No heel landmarks available, using segmentation bottom")
+            print(f"  ERROR: No heel landmarks available - cannot extract height")
+            return None
 
-        # Get x-coordinate for top
-        x_top = height_info.get('top', {}).get('x', 0.5)
         x_avg = (x_top + x_bottom) / 2
 
         print(f"  Height measurement from y_top={y_top:.4f} to y_bottom={y_bottom:.4f}")

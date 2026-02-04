@@ -32,6 +32,9 @@ from mediapipe_detection.head_detection import detect_head_width
 from vitpose_detection.pose_detection import detect_pose
 from vitpose_detection.hand_detection import detect_hands
 
+# Import YOLOv8 head detection (for accurate head top position in height measurement)
+from yolov8_detection.head_detection import detect_head
+
 # Import measurement utilities
 from measurement_extraction.measurement_extraction_utils import (
     extract_height,
@@ -127,11 +130,27 @@ class MeasurementExtractor:
         Returns:
             Dictionary containing all detection results
         """
-        print("Running detections (ViTPose + MediaPipe)...")
+        print("Running detections (ViTPose + MediaPipe + YOLOv8)...")
 
         detections = {}
 
-        # 1. Body segmentation (for height)
+        # 1. Head detection using YOLOv8 (for accurate head top position in height)
+        print("  - Head detection (YOLOv8)...")
+        try:
+            head_output = self._get_intermediate_path("head_detection")
+            detections['head'] = detect_head(
+                image_path,
+                output_path=head_output
+            )
+            if detections['head'].get('head_detected'):
+                print(f"     Head detected (top_y={detections['head']['head_top_y']:.4f})")
+            else:
+                print(f"     WARNING: No head detected - height measurement will fail")
+        except Exception as e:
+            print(f"     Head detection failed: {e}")
+            detections['head'] = {}
+
+        # 2. Body segmentation (for body mask, NOT used for height)
         print("  - Body segmentation...")
         try:
             body_output = self._get_intermediate_path("body_detection")
@@ -144,7 +163,7 @@ class MeasurementExtractor:
             print(f"     Body segmentation failed: {e}")
             detections['body'] = {}
 
-        # 2. Hair segmentation (for hair length)
+        # 4. Hair segmentation (for hair length)
         print("  - Hair segmentation...")
         try:
             hair_output = self._get_intermediate_path("hair_segmentation")
@@ -158,7 +177,7 @@ class MeasurementExtractor:
             print(f"     Hair segmentation failed: {e}")
             detections['hair'] = {}
 
-        # 3. Pose detection using ViTPose (for body measurements)
+        # 5. Pose detection using ViTPose (for body measurements)
         print("  - Pose detection (ViTPose)...")
         try:
             pose_output = self._get_intermediate_path("pose_detection")
@@ -171,7 +190,7 @@ class MeasurementExtractor:
             print(f"     Pose detection failed: {e}")
             detections['pose'] = {}
 
-        # 3b. Head width detection using MediaPipe (better ear landmark accuracy)
+        # 5b. Head width detection using MediaPipe (better ear landmark accuracy)
         print("  - Head width detection (MediaPipe)...")
         try:
             head_width_output = self._get_intermediate_path("head_width_detection")
@@ -186,7 +205,7 @@ class MeasurementExtractor:
         except Exception as e:
             print(f"     Head width detection failed: {e}")
 
-        # 4. Hand detection using ViTPose (for hand length)
+        # 6. Hand detection using ViTPose (for hand length)
         print("  - Hand detection (ViTPose)...")
         try:
             hand_output = self._get_intermediate_path("hand_detection")
@@ -228,9 +247,9 @@ class MeasurementExtractor:
             # Get image dimensions
             image_width, image_height = get_image_dimensions(self.image_path)
 
-            # Measure subject height in pixels
+            # Measure subject height in pixels using head detection
             measured_height_px = measure_height_in_pixels(
-                detections.get('body', {}),
+                detections.get('head', {}),
                 detections.get('pose', {}),
                 image_height
             )
@@ -251,7 +270,7 @@ class MeasurementExtractor:
                     self.calibration_data,
                     initial_shift_factor,
                     self.known_height_cm,
-                    body_data=detections.get('body', {}),
+                    head_data=detections.get('head', {}),
                     pose_data=detections.get('pose', {}),
                     image_path=self.image_path,
                     iterate=True,
@@ -272,13 +291,13 @@ class MeasurementExtractor:
                 print(f"   WARNING: Could not measure height in pixels, using original calibration")
                 measurements['plane_shift_applied'] = False
 
-        # Extract height from body detection
-        if detections.get('body'):
+        # Extract height using YOLOv8 head detection
+        if detections.get('head') and detections['head'].get('head_detected'):
             height_cm = extract_height(
-                detections['body'],
+                detections['head'],
                 calibration_to_use,
                 self.image_path,
-                pose_data=detections.get('pose')  # Pass pose data for ankle landmarks
+                pose_data=detections.get('pose')  # Pass pose data for heel landmarks
             )
             if height_cm is not None:
                 # Apply plane shift correction for perspective-corrected height

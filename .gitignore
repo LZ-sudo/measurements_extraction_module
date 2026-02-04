@@ -5,3 +5,4 @@ reference_code/
 __pycache__/
 camera_calibration_inputs/
 CLAUDE.md
+weight_files/best.pt
