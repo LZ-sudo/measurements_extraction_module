@@ -24,7 +24,6 @@ from typing import Dict, Optional
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 # Import MediaPipe detection modules (for segmentation and head width)
-from mediapipe_detection.body_segmentation import segment_body
 from mediapipe_detection.hair_segmentation import segment_hair
 from mediapipe_detection.head_detection import detect_head_width
 
