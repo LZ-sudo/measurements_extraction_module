@@ -2,7 +2,7 @@
 Hair Segmentation Module using MediaPipe Image Segmenter
 
 This script performs hair segmentation on an image using MediaPipe's Image Segmenter
-with a custom hair segmentation model, combined with face detection to improve accuracy.
+with a custom hair segmentation model, combined with YOLOv8 head detection to improve accuracy.
 Extracts normalized hair length coordinates for measurements.
 """
 
@@ -18,7 +18,7 @@ from PIL import Image
 class HairSegmenter:
     """
     A class to perform hair segmentation on images using MediaPipe.
-    Uses face detection to locate the head region for better segmentation accuracy.
+    Uses YOLOv8 head detection to locate the head region for better segmentation accuracy.
     """
 
     def __init__(self, model_path: Optional[str] = None, use_face_detection: bool = True):
@@ -28,7 +28,7 @@ class HairSegmenter:
         Args:
             model_path: Path to hair segmentation model (.tflite file).
                        If None, looks for hair_segmenter.tflite in weight_files.
-            use_face_detection: Whether to use face detection to locate head region first.
+            use_face_detection: Whether to use YOLOv8 head detection to locate head region first.
                               This significantly improves accuracy for full-body images.
         """
         from mediapipe.tasks import python
@@ -36,27 +36,28 @@ class HairSegmenter:
 
         self.use_face_detection = use_face_detection
 
-        # Initialize face detector if needed
+        # Initialize YOLOv8 head detector if needed
         if use_face_detection:
-            face_model_path = os.path.join(
-                os.path.dirname(os.path.dirname(__file__)),
-                "weight_files",
-                "face_landmarker.task"
-            )
-            if os.path.exists(face_model_path):
-                face_base_options = python.BaseOptions(model_asset_path=face_model_path)
-                face_options = vision.FaceLandmarkerOptions(
-                    base_options=face_base_options,
-                    running_mode=vision.RunningMode.IMAGE,
-                    num_faces=1
+            try:
+                from ultralytics import YOLO
+                head_model_path = os.path.join(
+                    os.path.dirname(os.path.dirname(__file__)),
+                    "weight_files",
+                    "best.pt"
                 )
-                self.face_detector = vision.FaceLandmarker.create_from_options(face_options)
-            else:
-                print(f"Warning: Face detector not found. Proceeding without face detection.")
+                if os.path.exists(head_model_path):
+                    self.head_detector = YOLO(head_model_path)
+                    print("[*] YOLOv8 head detector loaded successfully")
+                else:
+                    print(f"Warning: Head detector not found at {head_model_path}. Proceeding without head detection.")
+                    self.use_face_detection = False
+                    self.head_detector = None
+            except (ImportError, Exception) as e:
+                print(f"Warning: Could not load head detector: {e}. Proceeding without head detection.")
                 self.use_face_detection = False
-                self.face_detector = None
+                self.head_detector = None
         else:
-            self.face_detector = None
+            self.head_detector = None
 
         # Get hair segmentation model path
         if model_path is None:
@@ -85,7 +86,7 @@ class HairSegmenter:
 
     def _get_head_region(self, image: np.ndarray) -> Tuple[int, int, int, int]:
         """
-        Detect face and estimate head region including hair.
+        Detect head using YOLOv8 and estimate head region including hair.
 
         Args:
             image: Input image as numpy array (BGR format).
@@ -95,40 +96,35 @@ class HairSegmenter:
         """
         h, w = image.shape[:2]
 
-        # Convert to RGB for face detection
-        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image_rgb)
+        # Run YOLOv8 head detection
+        results = self.head_detector(image, verbose=False)
 
-        # Detect face
-        results = self.face_detector.detect(mp_image)
+        if results and len(results) > 0:
+            result = results[0]
+            if result.boxes and len(result.boxes) > 0:
+                # Get the first (highest confidence) detection
+                box = result.boxes[0]
+                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
 
-        if results.face_landmarks:
-            # Get face landmarks
-            face_landmarks = results.face_landmarks[0]
+                face_left = int(x1)
+                face_top = int(y1)
+                face_right = int(x2)
+                face_bottom = int(y2)
 
-            # Calculate face bounding box
-            x_coords = [int(lm.x * w) for lm in face_landmarks]
-            y_coords = [int(lm.y * h) for lm in face_landmarks]
+                face_width = face_right - face_left
+                face_height = face_bottom - face_top
 
-            face_left = min(x_coords)
-            face_right = max(x_coords)
-            face_top = min(y_coords)
-            face_bottom = max(y_coords)
+                # Estimate head region (expand to include hair)
+                # Hair can extend significantly, especially for long hair on female subjects
+                head_top = max(0, face_top - int(face_height * 1.2))  # Expand up more for hair volume
+                head_bottom = min(h, face_bottom + int(face_height * 2.5))  # Expand down for long hair
+                head_left = max(0, face_left - int(face_width * 0.6))  # Expand sides more
+                head_right = min(w, face_right + int(face_width * 0.6))
 
-            face_width = face_right - face_left
-            face_height = face_bottom - face_top
+                return head_top, head_bottom, head_left, head_right
 
-            # Estimate head region (expand to include hair)
-            # Hair can extend significantly, especially for long hair on female subjects
-            head_top = max(0, face_top - int(face_height * 1.2))  # Expand up more for hair volume
-            head_bottom = min(h, face_bottom + int(face_height * 2.5))  # Expand down for long hair
-            head_left = max(0, face_left - int(face_width * 0.6))  # Expand sides more
-            head_right = min(w, face_right + int(face_width * 0.6))
-
-            return head_top, head_bottom, head_left, head_right
-        else:
-            # No face detected, use top portion of image
-            return 0, int(h * 0.5), 0, w
+        # No head detected, use top portion of image
+        return 0, int(h * 0.5), 0, w
 
     def segment(self, image: np.ndarray, return_mask: bool = False, return_isolated: bool = False) -> Dict:
         """
@@ -153,8 +149,8 @@ class HairSegmenter:
         h, w = image.shape[:2]
         full_mask = np.zeros((h, w), dtype=np.uint8)
 
-        # Get head region if using face detection
-        if self.use_face_detection and self.face_detector is not None:
+        # Get head region if using head detection
+        if self.use_face_detection and self.head_detector is not None:
             head_top, head_bottom, head_left, head_right = self._get_head_region(image)
 
             # Extract head region
@@ -242,8 +238,8 @@ class HairSegmenter:
         h, w = image.shape[:2]
         full_mask = np.zeros((h, w), dtype=np.uint8)
 
-        # Get head region if using face detection
-        if self.use_face_detection and self.face_detector is not None:
+        # Get head region if using head detection
+        if self.use_face_detection and self.head_detector is not None:
             head_top, head_bottom, head_left, head_right = self._get_head_region(image)
 
             # Extract head region
@@ -333,8 +329,7 @@ class HairSegmenter:
     def close(self):
         """Release resources."""
         self.segmenter.close()
-        if self.face_detector is not None:
-            self.face_detector.close()
+        # YOLOv8 head_detector doesn't require explicit cleanup
 
 
 def segment_hair(

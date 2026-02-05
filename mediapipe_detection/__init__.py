@@ -10,14 +10,11 @@ Pose and hand detection for other body measurements use vitpose_detection for hi
 """
 
 from .hair_segmentation import HairSegmenter, segment_hair
-from .face_detection import FaceDetector, detect_face
 from .head_detection import HeadWidthDetector, detect_head_width
 
 __all__ = [
     'HairSegmenter',
-    'FaceDetector',
     'HeadWidthDetector',
     'segment_hair',
-    'detect_face',
     'detect_head_width'
 ]

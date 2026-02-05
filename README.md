@@ -11,8 +11,7 @@ measurements_extraction_module/
 ├── .gitmodules                    # Git submodule configuration
 ├── mediapipe_detection/           # Segmentation and head width detection
 │   ├── head_detection.py          # Head width via MediaPipe Pose (ear landmarks)
-│   ├── face_detection.py          # Face detection for hair segmentation
-│   └── hair_segmentation.py       # Hair segmentation with face detection
+│   └── hair_segmentation.py       # Hair segmentation with YOLOv8 head detection
 ├── vitpose_detection/             # High-accuracy pose detection (easyViTPose)
 │   ├── config_model.py            # Model configuration and downloading
 │   ├── pose_detection.py          # Body pose landmarks (133 wholebody keypoints)
@@ -56,7 +55,7 @@ measurements_extraction_module/
 - Model source: [Owen718/Head-Detection-Yolov8](https://github.com/Owen718/Head-Detection-Yolov8)
 
 ### Segmentation (MediaPipe)
-- **Hair Segmentation**: Combined with face detection for accurate hair boundary detection
+- **Hair Segmentation**: Combined with YOLOv8 head detection for accurate hair boundary detection in full-body images
 - **Head Width Detection**: Via MediaPipe Pose ear landmarks (7 & 8)
 
 ### ArUco Marker-Based Calibration
@@ -95,11 +94,11 @@ pip install -r requirements.txt
 
 **MediaPipe Models** (included in `weight_files/`):
 - `pose_landmarker_heavy.task` (~30MB) - for head width detection
-- `face_landmarker.task` (~10MB) - for face detection
 - `hair_segmenter.tflite` - for hair segmentation
 
 **YOLOv8 Head Detection Model** (downloaded automatically on first run to `weight_files/`):
 - `best.pt` (~130MB) - YOLOv8 model trained on CrowdHuman for head detection
+- Used for: Height measurement (head top detection) and hair segmentation (head region localization)
 - Source: [Owen718/Head-Detection-Yolov8](https://github.com/Owen718/Head-Detection-Yolov8)
 
 **ViTPose Models** (downloaded automatically on first run):
@@ -283,7 +282,6 @@ Contains detailed calibration data including:
 - [ViTPose Paper](https://arxiv.org/abs/2204.12484) - Vision Transformer for Generic Body Pose Estimation
 - [Head-Detection-Yolov8](https://github.com/Owen718/Head-Detection-Yolov8) - YOLOv8 head detection model trained on CrowdHuman dataset
 - [Mediapipe Pose Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker/python)
-- [Mediapipe Face Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker/python)
 - [Mediapipe Image Segmentation](https://ai.google.dev/edge/mediapipe/solutions/vision/image_segmenter)
 - [OpenCV ArUco Marker Detection](https://docs.opencv.org/4.x/d5/dae/tutorial_aruco_detection.html)
 - [Camera Calibration with OpenCV](https://docs.opencv.org/4.x/dc/dbb/tutorial_py_calibration.html)
