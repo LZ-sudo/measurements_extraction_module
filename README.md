@@ -99,7 +99,6 @@ pip install -r requirements.txt
 **YOLOv8 Head Detection Model** (downloaded automatically on first run to `weight_files/`):
 - `best.pt` (~130MB) - YOLOv8 model trained on CrowdHuman for head detection
 - Used for: Height measurement (head top detection) and hair segmentation (head region localization)
-- Source: [Owen718/Head-Detection-Yolov8](https://github.com/Owen718/Head-Detection-Yolov8)
 
 **ViTPose Models** (downloaded automatically on first run):
 - `vitpose-h-wholebody.pth` (~350MB) - ViTPose-Huge for pose detection
