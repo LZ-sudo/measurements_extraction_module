@@ -3,6 +3,10 @@ Body Region Configuration for Movement Accuracy Evaluation
 
 Defines configurable body regions with their COCO-WholeBody keypoint indices
 and angle triplets for joint angle error computation.
+
+Each arm region includes the ipsilateral arm chain, the contralateral shoulder,
+and both hips as reference landmarks so that DTW alignment and visualisation
+always carry the full torso frame of reference.
 """
 
 from typing import Dict, List
@@ -38,26 +42,31 @@ class BodyRegion(BaseModel):
 #   +17: pinky MCP    +18: pinky PIP    +19: pinky DIP    +20: pinky TIP
 #
 # Left hand base index: 91   Right hand base index: 112
-# MCP knuckle indices (left / right):
-#   thumb:  93 / 114    index:  96 / 117    middle: 100 / 121
-#   ring:  104 / 125    pinky: 108 / 129
+# Base knuckle indices (left / right) — CMC for thumb, MCP for all other fingers:
+#   thumb CMC: 92 / 113    index MCP:  96 / 117    middle MCP: 100 / 121
+#   ring MCP: 104 / 125    pinky MCP: 108 / 129
 
 LEFT_ARM = BodyRegion(
     name="left_arm",
     joints=[
-        JointInfo(name="left_shoulder",   coco_index=5),
-        JointInfo(name="left_elbow",      coco_index=7),
-        JointInfo(name="left_wrist",      coco_index=9),
-        JointInfo(name="left_thumb_mcp",  coco_index=93),
-        JointInfo(name="left_index_mcp",  coco_index=96),
-        JointInfo(name="left_middle_mcp", coco_index=100),
-        JointInfo(name="left_ring_mcp",   coco_index=104),
-        JointInfo(name="left_pinky_mcp",  coco_index=108),
+        # Ipsilateral arm chain
+        JointInfo(name="left_shoulder",    coco_index=5),
+        JointInfo(name="left_elbow",       coco_index=7),
+        JointInfo(name="left_wrist",       coco_index=9),
+        JointInfo(name="left_thumb_cmc",   coco_index=92),
+        JointInfo(name="left_index_mcp",   coco_index=96),
+        JointInfo(name="left_middle_mcp",  coco_index=100),
+        JointInfo(name="left_ring_mcp",    coco_index=104),
+        JointInfo(name="left_pinky_mcp",   coco_index=108),
+        # Torso reference landmarks
+        JointInfo(name="right_shoulder",   coco_index=6),
+        JointInfo(name="left_hip",         coco_index=11),
+        JointInfo(name="right_hip",        coco_index=12),
     ],
     angle_triplets=[
         AngleTriplet(
-            name="left_shoulder_angle",
-            proximal_index=11,
+            name="left_arm_elevation",
+            proximal_index=6,
             vertex_index=5,
             distal_index=7,
             sigma_deg=15.0,
@@ -82,19 +91,24 @@ LEFT_ARM = BodyRegion(
 RIGHT_ARM = BodyRegion(
     name="right_arm",
     joints=[
+        # Ipsilateral arm chain
         JointInfo(name="right_shoulder",   coco_index=6),
         JointInfo(name="right_elbow",      coco_index=8),
         JointInfo(name="right_wrist",      coco_index=10),
-        JointInfo(name="right_thumb_mcp",  coco_index=114),
+        JointInfo(name="right_thumb_cmc",  coco_index=113),
         JointInfo(name="right_index_mcp",  coco_index=117),
         JointInfo(name="right_middle_mcp", coco_index=121),
         JointInfo(name="right_ring_mcp",   coco_index=125),
         JointInfo(name="right_pinky_mcp",  coco_index=129),
+        # Torso reference landmarks
+        JointInfo(name="left_shoulder",    coco_index=5),
+        JointInfo(name="left_hip",         coco_index=11),
+        JointInfo(name="right_hip",        coco_index=12),
     ],
     angle_triplets=[
         AngleTriplet(
-            name="right_shoulder_angle",
-            proximal_index=12,
+            name="right_arm_elevation",
+            proximal_index=5,
             vertex_index=6,
             distal_index=8,
             sigma_deg=15.0,

@@ -14,9 +14,11 @@ Usage (CLI):
 """
 
 import argparse
+import json
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import cv2
 import numpy as np
 
 from body_region_config import REGION_REGISTRY, DEFAULT_REGIONS, BodyRegion
@@ -29,7 +31,54 @@ from movement_accuracy_utils import (
     align_with_dtw,
     compute_angle_error,
     compute_angle_accuracy,
+    CONFIDENCE_THRESHOLD,
 )
+
+# BGR display colors per arm region
+_REGION_COLORS: Dict[str, tuple] = {
+    "left_arm":  (50, 200, 50),   # green
+    "right_arm": (50, 130, 255),  # orange
+}
+
+# Fixed color assignments for shared torso landmarks so they are never
+# overwritten by whichever arm region happens to be drawn last.
+_TORSO_JOINT_COLORS: Dict[int, tuple] = {
+    5:  (50, 200, 50),    # left shoulder  → green (matches left_arm)
+    6:  (50, 130, 255),   # right shoulder → orange (matches right_arm)
+    11: (180, 180, 180),  # left hip       → gray
+    12: (180, 180, 180),  # right hip      → gray
+}
+
+# Arm-only skeleton connections (shoulder→elbow→wrist→finger bases).
+# Thumb uses CMC (92 left, 113 right); other fingers use MCP.
+# Hip-to-shoulder and cross-torso lines are drawn separately via _TORSO_CONNECTIONS.
+_REGION_CONNECTIONS: Dict[str, List[tuple]] = {
+    "left_arm": [
+        (5, 7), (7, 9),
+        (9, 92), (9, 96), (9, 100), (9, 104), (9, 108),
+    ],
+    "right_arm": [
+        (6, 8), (8, 10),
+        (10, 113), (10, 117), (10, 121), (10, 125), (10, 129),
+    ],
+}
+
+# Torso reference frame connections drawn in gray beneath arm overlays.
+_TORSO_CONNECTIONS: List[tuple] = [
+    (11, 12),  # hip bar
+    (5, 6),    # shoulder bar
+    (11, 5),   # left torso side
+    (12, 6),   # right torso side
+]
+_TORSO_COLOR: tuple = (180, 180, 180)  # gray BGR
+
+
+def _resize_to_height(image: np.ndarray, height: int) -> np.ndarray:
+    """Scale an image to the given height, preserving aspect ratio."""
+    if image.shape[0] == height:
+        return image
+    scale = height / image.shape[0]
+    return cv2.resize(image, (int(image.shape[1] * scale), height))
 
 
 class MovementEvaluator:
@@ -76,6 +125,10 @@ class MovementEvaluator:
             )
 
         self.regions: List[BodyRegion] = [REGION_REGISTRY[r] for r in self.region_names]
+
+        # Set by evaluate(); used by generate_comparison_image()
+        self._gt_raw:   Optional[List] = None
+        self._pred_raw: Optional[List] = None
 
     def _collect_joint_indices(self) -> List[int]:
         """Return a deduplicated ordered list of joint indices across all active regions."""
@@ -155,6 +208,9 @@ class MovementEvaluator:
             pred_raw = extract_keypoints_from_image(str(self.pred_source), self.device)
         else:
             pred_raw = extract_keypoints_from_video(str(self.pred_source), self.device)
+
+        self._gt_raw   = gt_raw
+        self._pred_raw = pred_raw
 
         # Step 2: Build DTW-compatible sequences (normalized, valid frames only)
         gt_vectors,   gt_frame_indices   = self._build_valid_sequence(gt_raw,   joint_indices)
@@ -289,6 +345,140 @@ class MovementEvaluator:
             print()
         print(separator)
 
+    def save_results(self, results: Dict, output_path: Path) -> None:
+        """Serialize evaluation results and source metadata to a JSON file."""
+        payload = {
+            "gt_source":  str(self.gt_source),
+            "pred_source": str(self.pred_source),
+            "regions": self.region_names,
+            **results,
+        }
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+        print(f"Results saved to: {output_path}")
+
+    def _draw_keypoints_on_image(
+        self,
+        image: np.ndarray,
+        kpts: Optional[np.ndarray],
+    ) -> np.ndarray:
+        """
+        Draw torso reference frame and arm skeleton onto a copy of image.
+
+        Drawing order (back to front):
+          1. Torso box (hip bar, shoulder bar, side lines) in gray.
+          2. Arm connections (shoulder→elbow→wrist→fingers) in arm colors.
+          3. Joint circles with fixed colors: shoulders match their arm,
+             hips are gray, all other arm joints match their arm.
+        """
+        img = image.copy()
+        if kpts is None:
+            return img
+
+        def _pt(idx: int):
+            return (int(kpts[idx][1]), int(kpts[idx][0]))  # (x, y) from (y, x, score)
+
+        def _visible(idx: int) -> bool:
+            return idx < len(kpts) and kpts[idx][2] >= CONFIDENCE_THRESHOLD
+
+        # Step 1: Draw torso reference frame in gray
+        for i, j in _TORSO_CONNECTIONS:
+            if _visible(i) and _visible(j):
+                cv2.line(img, _pt(i), _pt(j), _TORSO_COLOR, 2)
+
+        # Step 2: Draw arm-specific connections in arm colors
+        for region in self.regions:
+            color = _REGION_COLORS.get(region.name, (180, 180, 180))
+            for i, j in _REGION_CONNECTIONS.get(region.name, []):
+                if _visible(i) and _visible(j):
+                    cv2.line(img, _pt(i), _pt(j), color, 2)
+
+        # Step 3: Build a per-index color map so torso landmarks keep their
+        # fixed colors regardless of which region is iterated last.
+        joint_color_map: Dict[int, tuple] = {}
+        for region in self.regions:
+            color = _REGION_COLORS.get(region.name, (180, 180, 180))
+            for joint in region.joints:
+                idx = joint.coco_index
+                if idx not in joint_color_map:
+                    joint_color_map[idx] = color
+        # Overwrite with fixed torso colors (shoulders + hips)
+        joint_color_map.update(_TORSO_JOINT_COLORS)
+
+        # Step 4: Draw joint circles
+        for idx, color in joint_color_map.items():
+            if _visible(idx):
+                cx, cy = _pt(idx)
+                cv2.circle(img, (cx, cy), 6, color, -1)
+                cv2.circle(img, (cx, cy), 6, (255, 255, 255), 1)
+
+        return img
+
+    def generate_comparison_image(self, results: Dict, output_path: Path) -> None:
+        """
+        Generate a side-by-side comparison image with arm keypoints overlaid.
+
+        Only supported when both sources are image files. Raises RuntimeError
+        for video inputs or if evaluate() has not been called.
+        """
+        if not (is_image_path(self.gt_source) and is_image_path(self.pred_source)):
+            raise RuntimeError(
+                "Comparison visualization is only supported for image inputs."
+            )
+        if self._gt_raw is None or self._pred_raw is None:
+            raise RuntimeError(
+                "evaluate() must be called before generate_comparison_image()."
+            )
+
+        gt_img   = cv2.imread(str(self.gt_source))
+        pred_img = cv2.imread(str(self.pred_source))
+        if gt_img is None or pred_img is None:
+            raise RuntimeError("Failed to read source images for visualization.")
+
+        gt_vis   = self._draw_keypoints_on_image(gt_img,   self._gt_raw[0])
+        pred_vis = self._draw_keypoints_on_image(pred_img, self._pred_raw[0])
+
+        target_h = 720
+        gt_vis   = _resize_to_height(gt_vis,   target_h)
+        pred_vis = _resize_to_height(pred_vis, target_h)
+
+        header_h = 50
+        gap      = 10
+        total_w  = gt_vis.shape[1] + gap + pred_vis.shape[1]
+        canvas   = np.zeros((target_h + header_h, total_w, 3), dtype=np.uint8)
+
+        canvas[header_h:, :gt_vis.shape[1]]          = gt_vis
+        canvas[header_h:, gt_vis.shape[1] + gap:]    = pred_vis
+
+        font      = cv2.FONT_HERSHEY_SIMPLEX
+        thickness = 2
+
+        cv2.putText(canvas, "Ground Truth", (10, 34),
+                    font, 0.8, (220, 220, 220), thickness)
+        cv2.putText(canvas, "Model", (gt_vis.shape[1] + gap + 10, 34),
+                    font, 0.8, (220, 220, 220), thickness)
+
+        overall_pct = results["overall_mean_accuracy"] * 100
+        acc_text    = f"Overall: {overall_pct:.1f}%"
+        (tw, _), _  = cv2.getTextSize(acc_text, font, 0.8, thickness)
+        cv2.putText(canvas, acc_text, (total_w - tw - 10, 34),
+                    font, 0.8, (50, 220, 50), thickness)
+
+        y_legend = header_h + 22
+        for region_name in self.region_names:
+            color = _REGION_COLORS.get(region_name, (180, 180, 180))
+            rdata = results["regions"].get(region_name, {})
+            pct   = rdata.get("mean_accuracy", 0.0) * 100
+            label = f"{region_name}: {pct:.1f}%"
+            cv2.rectangle(canvas, (10, y_legend - 12), (24, y_legend + 2), color, -1)
+            cv2.putText(canvas, label, (30, y_legend), font, 0.55, (220, 220, 220), 1)
+            y_legend += 22
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(output_path), canvas)
+        print(f"Comparison image saved to: {output_path}")
+
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -315,6 +505,14 @@ def _parse_args() -> argparse.Namespace:
         "--device", default=None, choices=["cpu", "cuda", "mps"],
         help="Inference device (default: auto-detect).",
     )
+    parser.add_argument(
+        "--output-dir", default=None,
+        metavar="DIR",
+        help=(
+            "Directory to save outputs. "
+            "Always writes a JSON report; also writes a comparison PNG for image inputs."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -330,3 +528,12 @@ if __name__ == "__main__":
 
     results = evaluator.evaluate()
     evaluator.print_results(results)
+
+    if args.output_dir:
+        output_dir = Path(args.output_dir)
+        stem = f"{evaluator.gt_source.stem}_vs_{evaluator.pred_source.stem}"
+        evaluator.save_results(results, output_dir / f"{stem}_results.json")
+        if is_image_path(evaluator.gt_source) and is_image_path(evaluator.pred_source):
+            evaluator.generate_comparison_image(
+                results, output_dir / f"{stem}_comparison.png"
+            )
