@@ -2,7 +2,7 @@
 Movement Accuracy Utility Functions
 
 Provides keypoint extraction from video or image, torso-relative pose normalization,
-DTW temporal alignment, and pose accuracy metrics (OKS, MPJPE, joint angle error).
+DTW temporal alignment, and joint angle error computation.
 """
 
 import sys
@@ -22,7 +22,7 @@ if str(_MEASUREMENTS_DIR) not in sys.path:
     sys.path.insert(0, str(_MEASUREMENTS_DIR))
 
 from vitpose_detection.config_model import get_model_paths
-from body_region_config import AngleTriplet, JointInfo
+from body_region_config import AngleTriplet
 
 
 # Minimum confidence score for a keypoint to be considered valid.
@@ -273,64 +273,6 @@ def align_with_dtw(
     return dtw_ndim.warping_path(gt_array, pred_array)
 
 
-def compute_oks(
-    gt_kpts: Dict[int, np.ndarray],
-    pred_kpts: Dict[int, np.ndarray],
-    joints: List[JointInfo],
-) -> float:
-    """
-    Compute Object Keypoint Similarity (OKS) for a single aligned frame pair.
-
-    Formula: OKS_i = exp(-d_i^2 / (2 * sigma_i^2))
-    Scale is 1.0 since keypoints are already in torso-normalized space.
-    Only joints visible in both sequences contribute to the score.
-
-    Args:
-        gt_kpts:   Ground truth normalized keypoints {coco_index: np.array([x, y])}.
-        pred_kpts: Predicted normalized keypoints.
-        joints:    JointInfo list defining which joints to include.
-
-    Returns:
-        Mean OKS in [0, 1]. Returns 0.0 if no valid joints are available.
-    """
-    scores = []
-    for joint in joints:
-        idx = joint.coco_index
-        if idx not in gt_kpts or idx not in pred_kpts:
-            continue
-        dist_sq = float(np.sum((gt_kpts[idx] - pred_kpts[idx]) ** 2))
-        scores.append(np.exp(-dist_sq / (2.0 * joint.sigma ** 2)))
-
-    return float(np.mean(scores)) if scores else 0.0
-
-
-def compute_mpjpe(
-    gt_kpts: Dict[int, np.ndarray],
-    pred_kpts: Dict[int, np.ndarray],
-    joints: List[JointInfo],
-) -> Dict[str, float]:
-    """
-    Compute per-joint Euclidean distance (MPJPE) in torso-normalized units.
-
-    A value of 0.10 means the joint position differs by 10% of the torso height.
-
-    Args:
-        gt_kpts:   Ground truth normalized keypoints.
-        pred_kpts: Predicted normalized keypoints.
-        joints:    JointInfo list defining which joints to evaluate.
-
-    Returns:
-        Dict mapping joint name to Euclidean distance in torso units.
-    """
-    errors: Dict[str, float] = {}
-    for joint in joints:
-        idx = joint.coco_index
-        if idx not in gt_kpts or idx not in pred_kpts:
-            continue
-        errors[joint.name] = float(np.linalg.norm(gt_kpts[idx] - pred_kpts[idx]))
-    return errors
-
-
 def compute_joint_angle(
     kpts: Dict[int, np.ndarray],
     proximal_idx: int,
@@ -387,3 +329,32 @@ def compute_angle_error(
         if gt_angle is not None and pred_angle is not None:
             errors[triplet.name] = abs(gt_angle - pred_angle)
     return errors
+
+
+def compute_angle_accuracy(
+    gt_kpts: Dict[int, np.ndarray],
+    pred_kpts: Dict[int, np.ndarray],
+    angle_triplets: List[AngleTriplet],
+) -> Dict[str, float]:
+    """
+    Compute Gaussian-kernel accuracy for each joint angle triplet.
+
+    Formula: accuracy = exp(-error^2 / (2 * sigma_deg^2))
+    At 0 error -> 1.0; at sigma_deg error -> ~0.61; at 2*sigma_deg -> ~0.14.
+
+    Args:
+        gt_kpts:        Ground truth normalized keypoints.
+        pred_kpts:      Predicted normalized keypoints.
+        angle_triplets: AngleTriplet list from the BodyRegion.
+
+    Returns:
+        Dict mapping triplet name to accuracy in [0, 1].
+    """
+    scores: Dict[str, float] = {}
+    for triplet in angle_triplets:
+        gt_angle   = compute_joint_angle(gt_kpts,   triplet.proximal_index, triplet.vertex_index, triplet.distal_index)
+        pred_angle = compute_joint_angle(pred_kpts, triplet.proximal_index, triplet.vertex_index, triplet.distal_index)
+        if gt_angle is not None and pred_angle is not None:
+            err = abs(gt_angle - pred_angle)
+            scores[triplet.name] = float(np.exp(-err ** 2 / (2.0 * triplet.sigma_deg ** 2)))
+    return scores

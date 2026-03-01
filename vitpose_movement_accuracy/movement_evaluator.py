@@ -15,7 +15,7 @@ Usage (CLI):
 
 import argparse
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import numpy as np
 
@@ -27,9 +27,8 @@ from movement_accuracy_utils import (
     normalize_pose,
     build_frame_vector,
     align_with_dtw,
-    compute_oks,
-    compute_mpjpe,
     compute_angle_error,
+    compute_angle_accuracy,
 )
 
 
@@ -44,8 +43,8 @@ class MovementEvaluator:
            single frame for images).
         2. Normalize poses to torso-relative coordinates.
         3. Align sequences temporally with DTW.
-        4. Compute OKS, MPJPE, and joint angle error over aligned frame pairs.
-        5. Aggregate into per-region and per-joint summaries.
+        4. Compute joint angle error over aligned frame pairs.
+        5. Aggregate into per-region and per-angle summaries.
     """
 
     def __init__(
@@ -93,7 +92,7 @@ class MovementEvaluator:
         self,
         frame_keypoints,
         joint_indices: List[int],
-    ) -> Tuple[List[np.ndarray], List[int]]:
+    ) -> tuple[List[np.ndarray], List[int]]:
         """
         Build a normalized frame-vector sequence, skipping frames where any
         tracked joint is missing or below the confidence threshold.
@@ -124,18 +123,19 @@ class MovementEvaluator:
         Returns:
             Dict with the following structure:
             {
-                "overall_oks": float,        # Mean OKS across all regions [0, 1]
+                "overall_mean_accuracy": float,        # Mean accuracy across all regions [0, 1]
+                "overall_mean_angle_error_deg": float, # Mean angle error across all regions
                 "regions": {
                     "<region_name>": {
-                        "oks": float,
-                        "mean_angle_error_deg": float   # only for regions with angle triplets
-                    },
-                    ...
-                },
-                "joints": {
-                    "<joint_name>": {
-                        "oks":        float,   # Mean OKS for this joint [0, 1]
-                        "mean_mpjpe": float,   # Mean distance in torso units
+                        "mean_accuracy": float,
+                        "mean_angle_error_deg": float,
+                        "angles": {
+                            "<triplet_name>": {
+                                "mean_accuracy": float,        # Gaussian-kernel accuracy [0, 1]
+                                "mean_angle_error_deg": float, # Mean absolute error in degrees
+                            },
+                            ...
+                        }
                     },
                     ...
                 }
@@ -176,11 +176,13 @@ class MovementEvaluator:
         warping_path = align_with_dtw(gt_vectors, pred_vectors)
         print(f"Alignment complete. Aligned frame pairs: {len(warping_path)}")
 
-        # Step 4: Compute metrics over aligned frame pairs
-        region_oks_list:    Dict[str, List[float]] = {r.name: [] for r in self.regions}
-        region_angle_list:  Dict[str, List[float]] = {r.name: [] for r in self.regions}
-        joint_oks_list:     Dict[str, List[float]] = {}
-        joint_mpjpe_list:   Dict[str, List[float]] = {}
+        # Step 4: Accumulate per-frame accuracy and error per triplet
+        region_acc_list: Dict[str, Dict[str, List[float]]] = {
+            r.name: {t.name: [] for t in r.angle_triplets} for r in self.regions
+        }
+        region_err_list: Dict[str, Dict[str, List[float]]] = {
+            r.name: {t.name: [] for t in r.angle_triplets} for r in self.regions
+        }
 
         for gt_vec_idx, pred_vec_idx in warping_path:
             gt_kpts_raw   = gt_raw[gt_frame_indices[gt_vec_idx]]
@@ -196,48 +198,57 @@ class MovementEvaluator:
                 continue
 
             for region in self.regions:
-                # Region-level OKS
-                region_oks_list[region.name].append(
-                    compute_oks(gt_norm, pred_norm, region.joints)
-                )
-
-                # Angle error (only for regions with defined angle triplets, e.g. arms/legs)
                 if region.angle_triplets:
-                    angle_errs = compute_angle_error(gt_norm, pred_norm, region.angle_triplets)
-                    region_angle_list[region.name].extend(angle_errs.values())
-
-                # Per-joint OKS and MPJPE
-                mpjpe = compute_mpjpe(gt_norm, pred_norm, region.joints)
-                for joint in region.joints:
-                    joint_oks_list.setdefault(joint.name, []).append(
-                        compute_oks(gt_norm, pred_norm, [joint])
-                    )
-                    if joint.name in mpjpe:
-                        joint_mpjpe_list.setdefault(joint.name, []).append(mpjpe[joint.name])
+                    acc_scores = compute_angle_accuracy(gt_norm, pred_norm, region.angle_triplets)
+                    err_scores = compute_angle_error(gt_norm, pred_norm, region.angle_triplets)
+                    for triplet_name, acc in acc_scores.items():
+                        region_acc_list[region.name][triplet_name].append(acc)
+                    for triplet_name, err in err_scores.items():
+                        region_err_list[region.name][triplet_name].append(err)
 
         # Step 5: Aggregate
-        results: Dict = {"overall_oks": 0.0, "regions": {}, "joints": {}}
-        region_mean_oks: List[float] = []
+        results: Dict = {
+            "overall_mean_accuracy": 0.0,
+            "overall_mean_angle_error_deg": 0.0,
+            "regions": {},
+        }
+        region_acc_means: List[float] = []
+        region_err_means: List[float] = []
 
         for region in self.regions:
-            oks_vals   = region_oks_list[region.name]
-            mean_oks   = float(np.mean(oks_vals)) if oks_vals else 0.0
-            region_mean_oks.append(mean_oks)
+            triplet_entries: Dict[str, Dict] = {}
+            all_accs: List[float] = []
+            all_errs: List[float] = []
 
-            region_entry: Dict = {"oks": mean_oks}
-            angle_vals = region_angle_list[region.name]
-            if angle_vals:
-                region_entry["mean_angle_error_deg"] = float(np.mean(angle_vals))
+            for triplet_name in region_acc_list[region.name]:
+                accs = region_acc_list[region.name][triplet_name]
+                errs = region_err_list[region.name][triplet_name]
+                mean_acc = float(np.mean(accs)) if accs else 0.0
+                mean_err = float(np.mean(errs)) if errs else 0.0
+                triplet_entries[triplet_name] = {
+                    "mean_accuracy":        mean_acc,
+                    "mean_angle_error_deg": mean_err,
+                }
+                all_accs.extend(accs)
+                all_errs.extend(errs)
 
-            results["regions"][region.name] = region_entry
+            region_mean_acc = float(np.mean(all_accs)) if all_accs else 0.0
+            region_mean_err = float(np.mean(all_errs)) if all_errs else 0.0
+            region_acc_means.append(region_mean_acc)
+            region_err_means.append(region_mean_err)
 
-        results["overall_oks"] = float(np.mean(region_mean_oks)) if region_mean_oks else 0.0
-
-        for joint_name in joint_oks_list:
-            results["joints"][joint_name] = {
-                "oks":        float(np.mean(joint_oks_list[joint_name])),
-                "mean_mpjpe": float(np.mean(joint_mpjpe_list.get(joint_name, [0.0]))),
+            results["regions"][region.name] = {
+                "mean_accuracy":        region_mean_acc,
+                "mean_angle_error_deg": region_mean_err,
+                "angles":               triplet_entries,
             }
+
+        results["overall_mean_accuracy"] = (
+            float(np.mean(region_acc_means)) if region_acc_means else 0.0
+        )
+        results["overall_mean_angle_error_deg"] = (
+            float(np.mean(region_err_means)) if region_err_means else 0.0
+        )
 
         return results
 
@@ -251,24 +262,31 @@ class MovementEvaluator:
         print(f"  Model Source : {self.pred_source.name}")
         print(f"  Regions      : {', '.join(self.region_names)}")
         print("-" * 62)
-        overall_pct = results["overall_oks"] * 100
-        print(f"  Overall OKS  : {results['overall_oks']:.4f}  ({overall_pct:.1f}%)")
+        overall_pct = results["overall_mean_accuracy"] * 100
+        print(
+            f"  Overall Accuracy         : "
+            f"{results['overall_mean_accuracy']:.4f}  ({overall_pct:.1f}%)"
+        )
+        print(
+            f"  Overall Mean Angle Error : "
+            f"{results['overall_mean_angle_error_deg']:.2f} deg"
+        )
         print()
-        print("  Per-Region Breakdown:")
         for region_name, rdata in results["regions"].items():
-            pct  = rdata["oks"] * 100
-            line = f"    {region_name:<20} OKS: {rdata['oks']:.4f}  ({pct:.1f}%)"
-            if "mean_angle_error_deg" in rdata:
-                line += f"  |  angle error: {rdata['mean_angle_error_deg']:.2f} deg"
-            print(line)
-        print()
-        print("  Per-Joint Detail:")
-        for joint_name, jdata in results["joints"].items():
-            pct = jdata["oks"] * 100
+            region_pct = rdata["mean_accuracy"] * 100
             print(
-                f"    {joint_name:<26} OKS: {jdata['oks']:.4f}  ({pct:.1f}%)"
-                f"  |  MPJPE: {jdata['mean_mpjpe']:.4f} torso units"
+                f"  {region_name:<20} "
+                f"accuracy: {rdata['mean_accuracy']:.4f}  ({region_pct:.1f}%)"
+                f"  |  mean error: {rdata['mean_angle_error_deg']:.2f} deg"
             )
+            for angle_name, adata in rdata["angles"].items():
+                angle_pct = adata["mean_accuracy"] * 100
+                print(
+                    f"    {angle_name:<30} "
+                    f"{adata['mean_accuracy']:.4f}  ({angle_pct:.1f}%)"
+                    f"  |  {adata['mean_angle_error_deg']:.2f} deg"
+                )
+            print()
         print(separator)
 
 
