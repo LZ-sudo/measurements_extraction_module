@@ -16,6 +16,11 @@ measurements_extraction_module/
 │   ├── config_model.py            # Model configuration and downloading
 │   ├── pose_detection.py          # Body pose landmarks (133 wholebody keypoints)
 │   └── hand_detection.py          # Hand landmarks (21 points per hand)
+├── vitpose_movement_accuracy/     # Movement replication accuracy evaluation
+│   ├── __init__.py                # Package exports
+│   ├── body_region_config.py      # Body region and angle triplet definitions
+│   ├── movement_accuracy_utils.py # Keypoint extraction, normalization, DTW, angle computation
+│   └── movement_evaluator.py      # Main evaluator class and CLI
 ├── yolov8_detection/              # YOLOv8-based head detection for height
 │   └── head_detection.py          # Head bounding box detection (CrowdHuman)
 ├── measurement_calibration/       # ArUco-based calibration system
@@ -64,6 +69,14 @@ measurements_extraction_module/
 - **Perspective Correction**: Homography-based transformation for accurate height measurement
 - **Camera Calibration**: Optional lens distortion correction using chessboard calibration
 - **Flexible Marker Positioning**: Configurable marker positions for different backdrop setups
+
+### Movement Accuracy Evaluation (vitpose_movement_accuracy)
+- **Pose-Based Accuracy Metric**: Evaluates how accurately an animated 3D model replicates the arm movements of a subject using joint angle comparison
+- **IMU-Sensor Aligned Metrics**: Angle triplets are designed to match the sensor pairs present in the capture rig (chest, upper arm, forearm, back of hand), making the metric meaningful for IMU-driven animation
+- **DTW Temporal Alignment**: Dynamic Time Warping aligns sequences of different lengths or speeds before frame-level comparison, supporting both video-to-video and image-to-image evaluation
+- **Gaussian-Kernel Accuracy**: Converts angle errors to a [0, 1] accuracy score via `exp(-error² / (2σ²))`, where σ is a per-joint tolerance in degrees
+- **Per-Joint Breakdown**: Reports accuracy and mean angle error per region (left arm, right arm) and per angle triplet (arm elevation, elbow flexion, wrist deviation)
+- **Comparison Visualization**: Generates a side-by-side PNG with arm skeleton and torso reference frame overlaid for image inputs
 
 ### Measurements Extracted
 - **Height**: Full body height from heel landmarks to head top (using YOLOv8 head detection)
@@ -146,6 +159,69 @@ python complete_measurements.py subject.jpg -s 16.4 --marker-positions marker_po
 # Save all outputs
 python complete_measurements.py subject.jpg -s 16.4 --marker-positions marker_positions.json --camera-calibration camera_cal.json -o measurements.json --save-calibration calibration.json --save-visualization ./visualizations
 ```
+
+## Movement Accuracy Evaluation
+
+### Quick Start (CLI)
+
+Compare a ground truth subject video or image against an animated model render:
+
+```bash
+# Video-to-video comparison
+python -m vitpose_movement_accuracy.movement_evaluator \
+    --gt path/to/subject.mp4 \
+    --pred path/to/model_render.mp4 \
+    --output-dir ./outputs
+
+# Image-to-image comparison (also generates a comparison PNG)
+python -m vitpose_movement_accuracy.movement_evaluator \
+    --gt path/to/subject.jpg \
+    --pred path/to/model_render.jpg \
+    --output-dir ./outputs
+
+# Evaluate a specific region only, on a specific device
+python -m vitpose_movement_accuracy.movement_evaluator \
+    --gt subject.mp4 \
+    --pred model.mp4 \
+    --regions left_arm \
+    --device cuda \
+    --output-dir ./outputs
+```
+
+### Quick Start (Python API)
+
+```python
+from vitpose_movement_accuracy import MovementEvaluator
+
+evaluator = MovementEvaluator(
+    gt_source="path/to/subject.mp4",
+    pred_source="path/to/model_render.mp4",
+    regions=["left_arm", "right_arm"],  # default
+    device=None,                         # auto-detect
+)
+
+results = evaluator.evaluate()
+evaluator.print_results(results)
+
+# Save JSON report and (for image inputs) comparison PNG
+evaluator.save_results(results, output_path="outputs/results.json")
+evaluator.generate_comparison_image(results, output_path="outputs/comparison.png")
+```
+
+### Angle Triplets and Sensor Mapping
+
+Each angle triplet corresponds to a pair of IMU sensors in the capture rig:
+
+| Triplet | Joints (proximal → vertex → distal) | Sensor pair |
+|---|---|---|
+| `left_arm_elevation` | right shoulder → left shoulder → left elbow | Chest + left upper arm |
+| `left_elbow_angle` | left shoulder → left elbow → left wrist | Left upper arm + left forearm |
+| `left_wrist_angle` | left elbow → left wrist → left index MCP | Left forearm + left hand |
+| `right_arm_elevation` | left shoulder → right shoulder → right elbow | Chest + right upper arm |
+| `right_elbow_angle` | right shoulder → right elbow → right wrist | Right upper arm + right forearm |
+| `right_wrist_angle` | right elbow → right wrist → right index MCP | Right forearm + right hand |
+
+The torso reference frame (both shoulders and hips) is included in the DTW alignment vector so that arm position is evaluated relative to the full body context.
 
 ## Advanced Usage
 
@@ -238,6 +314,33 @@ Body measurements (`*_body_measurements.json`):
 }
 ```
 
+### Movement Accuracy Report
+
+Movement accuracy report (`*_results.json`):
+```json
+{
+  "gt_source": "path/to/subject.mp4",
+  "pred_source": "path/to/model_render.mp4",
+  "regions": ["left_arm", "right_arm"],
+  "overall_mean_accuracy": 0.8731,
+  "overall_mean_angle_error_deg": 6.42,
+  "regions": {
+    "left_arm": {
+      "mean_accuracy": 0.8914,
+      "mean_angle_error_deg": 5.81,
+      "angles": {
+        "left_arm_elevation":  { "mean_accuracy": 0.9102, "mean_angle_error_deg": 4.33 },
+        "left_elbow_angle":    { "mean_accuracy": 0.8843, "mean_angle_error_deg": 6.12 },
+        "left_wrist_angle":    { "mean_accuracy": 0.8797, "mean_angle_error_deg": 6.98 }
+      }
+    },
+    "right_arm": { "..." : "..." }
+  }
+}
+```
+
+For image inputs, a side-by-side comparison PNG (`*_comparison.png`) is also generated, showing the arm skeleton and torso reference frame overlaid on both images with overall accuracy annotated.
+
 Hair measurements (`*_hair_measurements.json`):
 ```json
 {
@@ -277,10 +380,12 @@ Contains detailed calibration data including:
 
 ## References
 
-- [easyViTPose](https://github.com/JunkyByte/easy_ViTPose) - High-accuracy pose estimation
+- [easyViTPose](https://github.com/JunkyByte/easy_ViTPose) - High-accuracy pose estimation used by both pose detection and movement accuracy evaluation
 - [ViTPose Paper](https://arxiv.org/abs/2204.12484) - Vision Transformer for Generic Body Pose Estimation
 - [Head-Detection-Yolov8](https://github.com/Owen718/Head-Detection-Yolov8) - YOLOv8 head detection model trained on CrowdHuman dataset
 - [Mediapipe Pose Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker/python)
 - [OpenCV ArUco Marker Detection](https://docs.opencv.org/4.x/d5/dae/tutorial_aruco_detection.html)
 - [Camera Calibration with OpenCV](https://docs.opencv.org/4.x/dc/dbb/tutorial_py_calibration.html)
 - [Perspective Transformation (Homography)](https://docs.opencv.org/4.x/d9/dab/tutorial_homography.html)
+- [dtaidistance](https://github.com/wannesm/dtaidistance) - Dynamic Time Warping for temporal sequence alignment
+- [COCO-WholeBody Keypoint Format](https://github.com/jin-s13/COCO-WholeBody) - 133-keypoint layout used for pose indexing
