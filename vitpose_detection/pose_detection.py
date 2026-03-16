@@ -463,7 +463,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--device", type=str, default=None,
-        choices=["cpu", "cuda", "mps"],
+        choices=["cpu", "cuda"],
         help="Device to run inference on (default: auto-detect)"
     )
 

@@ -502,7 +502,7 @@ def _parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--device", default=None, choices=["cpu", "cuda", "mps"],
+        "--device", default=None, choices=["cpu", "cuda"],
         help="Inference device (default: auto-detect).",
     )
     parser.add_argument(
