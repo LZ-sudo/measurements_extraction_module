@@ -2,7 +2,7 @@
 Body Region Configuration for Movement Accuracy Evaluation
 
 Defines configurable body regions with their COCO-WholeBody keypoint indices
-and angle triplets for joint angle error computation.
+and bone pairs for direction-based accuracy computation.
 
 Each arm region includes the ipsilateral arm chain, the contralateral shoulder,
 and both hips as reference landmarks so that DTW alignment and visualisation
@@ -19,18 +19,17 @@ class JointInfo(BaseModel):
     coco_index: int
 
 
-class AngleTriplet(BaseModel):
+class BonePair(BaseModel):
     name: str
     proximal_index: int
-    vertex_index: int
     distal_index: int
-    sigma_deg: float  # angle tolerance in degrees; accuracy ~= 0.61 at this error
+    sigma_deg: float  # bone direction tolerance in degrees; accuracy ~= 0.61 at this error
 
 
 class BodyRegion(BaseModel):
     name: str
     joints: List[JointInfo]
-    angle_triplets: List[AngleTriplet] = []
+    bone_pairs: List[BonePair] = []
 
 
 # COCO-WholeBody hand keypoint layout (21 points per hand, offsets from hand base):
@@ -63,27 +62,24 @@ LEFT_ARM = BodyRegion(
         JointInfo(name="left_hip",         coco_index=11),
         JointInfo(name="right_hip",        coco_index=12),
     ],
-    angle_triplets=[
-        AngleTriplet(
-            name="left_arm_elevation",
-            proximal_index=6,
-            vertex_index=5,
+    bone_pairs=[
+        BonePair(
+            name="upper_arm_left",
+            proximal_index=5,
             distal_index=7,
             sigma_deg=15.0,
         ),
-        AngleTriplet(
-            name="left_elbow_angle",
-            proximal_index=5,
-            vertex_index=7,
-            distal_index=9,
-            sigma_deg=10.0,
-        ),
-        AngleTriplet(
-            name="left_wrist_angle",
+        BonePair(
+            name="forearm_left",
             proximal_index=7,
-            vertex_index=9,
+            distal_index=9,
+            sigma_deg=15.0,
+        ),
+        BonePair(
+            name="hand_left",
+            proximal_index=9,
             distal_index=96,
-            sigma_deg=12.0,
+            sigma_deg=20.0,
         ),
     ],
 )
@@ -105,27 +101,24 @@ RIGHT_ARM = BodyRegion(
         JointInfo(name="left_hip",         coco_index=11),
         JointInfo(name="right_hip",        coco_index=12),
     ],
-    angle_triplets=[
-        AngleTriplet(
-            name="right_arm_elevation",
-            proximal_index=5,
-            vertex_index=6,
+    bone_pairs=[
+        BonePair(
+            name="upper_arm_right",
+            proximal_index=6,
             distal_index=8,
             sigma_deg=15.0,
         ),
-        AngleTriplet(
-            name="right_elbow_angle",
-            proximal_index=6,
-            vertex_index=8,
-            distal_index=10,
-            sigma_deg=10.0,
-        ),
-        AngleTriplet(
-            name="right_wrist_angle",
+        BonePair(
+            name="forearm_right",
             proximal_index=8,
-            vertex_index=10,
+            distal_index=10,
+            sigma_deg=15.0,
+        ),
+        BonePair(
+            name="hand_right",
+            proximal_index=10,
             distal_index=117,
-            sigma_deg=12.0,
+            sigma_deg=20.0,
         ),
     ],
 )

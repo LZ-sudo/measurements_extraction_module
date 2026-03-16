@@ -2,7 +2,8 @@
 Movement Accuracy Utility Functions
 
 Provides keypoint extraction from video or image, torso-relative pose normalization,
-DTW temporal alignment, and joint angle error computation.
+Procrustes rotation alignment, DTW temporal alignment, and bone direction error
+computation.
 """
 
 import sys
@@ -22,11 +23,11 @@ if str(_MEASUREMENTS_DIR) not in sys.path:
     sys.path.insert(0, str(_MEASUREMENTS_DIR))
 
 from vitpose_detection.config_model import get_model_paths
-from body_region_config import AngleTriplet
+from body_region_config import BonePair
 
 
 # Minimum confidence score for a keypoint to be considered valid.
-CONFIDENCE_THRESHOLD = 0.3
+CONFIDENCE_THRESHOLD = 0.2
 
 # Recognised image file extensions.
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".webp"}
@@ -196,6 +197,10 @@ def normalize_pose(frame_kpts: np.ndarray) -> Optional[Dict[int, np.ndarray]]:
     shoulder-to-hip distance. This makes the metric invariant to subject
     scale and camera distance differences between the two videos.
 
+    Uses whichever anchor joints are above CONFIDENCE_THRESHOLD rather than
+    requiring all four. Requires at least one valid hip and at least one valid
+    ipsilateral shoulder-hip pair for a meaningful reference frame.
+
     Args:
         frame_kpts: Array of shape (133, 3) as (y, x, score).
 
@@ -209,18 +214,25 @@ def normalize_pose(frame_kpts: np.ndarray) -> Optional[Dict[int, np.ndarray]]:
     l_hip      = frame_kpts[_LEFT_HIP_IDX]
     r_hip      = frame_kpts[_RIGHT_HIP_IDX]
 
-    if any(a[2] < CONFIDENCE_THRESHOLD for a in [l_shoulder, r_shoulder, l_hip, r_hip]):
+    # Hip midpoint from whichever hips are above threshold
+    valid_hips = [a for a in [l_hip, r_hip] if a[2] >= CONFIDENCE_THRESHOLD]
+    if not valid_hips:
+        return None
+    hip_mid_x = sum(a[1] for a in valid_hips) / len(valid_hips)
+    hip_mid_y = sum(a[0] for a in valid_hips) / len(valid_hips)
+
+    # Torso scale from available ipsilateral shoulder-hip pairs
+    torso_dists = []
+    for shoulder, hip in [(l_shoulder, l_hip), (r_shoulder, r_hip)]:
+        if shoulder[2] >= CONFIDENCE_THRESHOLD and hip[2] >= CONFIDENCE_THRESHOLD:
+            torso_dists.append(
+                float(np.linalg.norm([shoulder[1] - hip[1], shoulder[0] - hip[0]]))
+            )
+
+    if not torso_dists:
         return None
 
-    # Hip midpoint in (x, y) order (kpts are stored as y, x, score)
-    hip_mid_x = (l_hip[1] + r_hip[1]) / 2.0
-    hip_mid_y = (l_hip[0] + r_hip[0]) / 2.0
-
-    # Torso scale: average of left and right shoulder-to-hip distances
-    left_torso  = float(np.linalg.norm([l_shoulder[1] - l_hip[1], l_shoulder[0] - l_hip[0]]))
-    right_torso = float(np.linalg.norm([r_shoulder[1] - r_hip[1], r_shoulder[0] - r_hip[0]]))
-    torso_scale = (left_torso + right_torso) / 2.0
-
+    torso_scale = sum(torso_dists) / len(torso_dists)
     if torso_scale < 1e-6:
         return None
 
@@ -234,6 +246,47 @@ def normalize_pose(frame_kpts: np.ndarray) -> Optional[Dict[int, np.ndarray]]:
             ])
 
     return normalized
+
+
+def procrustes_align(
+    gt_kpts: Dict[int, np.ndarray],
+    pred_kpts: Dict[int, np.ndarray],
+    anchor_indices: List[int],
+) -> Dict[int, np.ndarray]:
+    """
+    Apply the optimal 2D rotation to pred_kpts to align it with gt_kpts,
+    using the Kabsch algorithm on the provided anchor landmarks.
+
+    Both inputs are assumed to already be torso-normalised (translation and
+    scale removed). This step removes the residual rotation difference caused
+    by camera angle variance between the two recordings.
+
+    Returns the rotated pred keypoints. If fewer than two common anchors are
+    available, the original pred_kpts are returned unchanged.
+
+    Args:
+        gt_kpts:         Ground truth normalised keypoints.
+        pred_kpts:       Predicted normalised keypoints.
+        anchor_indices:  COCO indices to use as alignment landmarks.
+
+    Returns:
+        Dict of rotated pred keypoints (same keys as pred_kpts).
+    """
+    common = [idx for idx in anchor_indices if idx in gt_kpts and idx in pred_kpts]
+    if len(common) < 2:
+        return pred_kpts
+
+    gt_pts   = np.array([gt_kpts[idx]   for idx in common])   # (N, 2)
+    pred_pts = np.array([pred_kpts[idx] for idx in common])   # (N, 2)
+
+    # Kabsch algorithm: find R minimising ||R @ pred_pts.T - gt_pts.T||
+    H = pred_pts.T @ gt_pts                                    # (2, 2)
+    U, _, Vt = np.linalg.svd(H)
+    V = Vt.T
+    d = np.linalg.det(V @ U.T)
+    R = V @ np.diag([1.0, d]) @ U.T                           # (2, 2) rotation
+
+    return {idx: R @ v for idx, v in pred_kpts.items()}
 
 
 def build_frame_vector(
@@ -273,88 +326,85 @@ def align_with_dtw(
     return dtw_ndim.warping_path(gt_array, pred_array)
 
 
-def compute_joint_angle(
-    kpts: Dict[int, np.ndarray],
-    proximal_idx: int,
-    vertex_idx: int,
-    distal_idx: int,
-) -> Optional[float]:
-    """
-    Compute the interior angle in degrees at the vertex joint.
-
-    Args:
-        kpts:          Normalized keypoints dict.
-        proximal_idx:  COCO index of the proximal joint (e.g. shoulder).
-        vertex_idx:    COCO index of the vertex joint (e.g. elbow).
-        distal_idx:    COCO index of the distal joint (e.g. wrist).
-
-    Returns:
-        Angle in degrees [0, 180], or None if any joint is missing or degenerate.
-    """
-    if proximal_idx not in kpts or vertex_idx not in kpts or distal_idx not in kpts:
-        return None
-
-    v1 = kpts[proximal_idx] - kpts[vertex_idx]
-    v2 = kpts[distal_idx]   - kpts[vertex_idx]
-
-    norm1 = float(np.linalg.norm(v1))
-    norm2 = float(np.linalg.norm(v2))
-    if norm1 < 1e-6 or norm2 < 1e-6:
-        return None
-
-    cos_angle = np.clip(np.dot(v1, v2) / (norm1 * norm2), -1.0, 1.0)
-    return float(np.degrees(np.arccos(cos_angle)))
-
-
-def compute_angle_error(
+def compute_bone_angle_error(
     gt_kpts: Dict[int, np.ndarray],
     pred_kpts: Dict[int, np.ndarray],
-    angle_triplets: List[AngleTriplet],
+    bone_pairs: List[BonePair],
 ) -> Dict[str, float]:
     """
-    Compute absolute angle error in degrees for each joint angle triplet.
+    Compute the angle in degrees between corresponding bone direction vectors.
+
+    For each bone, the direction vector is computed as (distal - proximal),
+    normalised to unit length. The error is the angle between the GT and pred
+    unit vectors, giving a view-invariant measure of limb orientation difference.
 
     Args:
-        gt_kpts:        Ground truth normalized keypoints.
-        pred_kpts:      Predicted normalized keypoints.
-        angle_triplets: AngleTriplet list from the BodyRegion.
+        gt_kpts:    Ground truth normalised (and Procrustes-aligned) keypoints.
+        pred_kpts:  Predicted normalised keypoints.
+        bone_pairs: BonePair list from the BodyRegion.
 
     Returns:
-        Dict mapping triplet name to absolute angle error in degrees.
+        Dict mapping bone name to angular error in degrees [0, 180].
     """
     errors: Dict[str, float] = {}
-    for triplet in angle_triplets:
-        gt_angle   = compute_joint_angle(gt_kpts,   triplet.proximal_index, triplet.vertex_index, triplet.distal_index)
-        pred_angle = compute_joint_angle(pred_kpts, triplet.proximal_index, triplet.vertex_index, triplet.distal_index)
-        if gt_angle is not None and pred_angle is not None:
-            errors[triplet.name] = abs(gt_angle - pred_angle)
+    for bone in bone_pairs:
+        if (
+            bone.proximal_index not in gt_kpts or bone.distal_index not in gt_kpts
+            or bone.proximal_index not in pred_kpts or bone.distal_index not in pred_kpts
+        ):
+            continue
+
+        v_gt   = gt_kpts[bone.distal_index]   - gt_kpts[bone.proximal_index]
+        v_pred = pred_kpts[bone.distal_index] - pred_kpts[bone.proximal_index]
+
+        n_gt   = float(np.linalg.norm(v_gt))
+        n_pred = float(np.linalg.norm(v_pred))
+        if n_gt < 1e-6 or n_pred < 1e-6:
+            continue
+
+        cos_a = np.clip(np.dot(v_gt / n_gt, v_pred / n_pred), -1.0, 1.0)
+        errors[bone.name] = float(np.degrees(np.arccos(cos_a)))
+
     return errors
 
 
-def compute_angle_accuracy(
+def compute_bone_angle_accuracy(
     gt_kpts: Dict[int, np.ndarray],
     pred_kpts: Dict[int, np.ndarray],
-    angle_triplets: List[AngleTriplet],
+    bone_pairs: List[BonePair],
 ) -> Dict[str, float]:
     """
-    Compute Gaussian-kernel accuracy for each joint angle triplet.
+    Compute Gaussian-kernel accuracy for each bone direction pair.
 
     Formula: accuracy = exp(-error^2 / (2 * sigma_deg^2))
     At 0 error -> 1.0; at sigma_deg error -> ~0.61; at 2*sigma_deg -> ~0.14.
 
     Args:
-        gt_kpts:        Ground truth normalized keypoints.
-        pred_kpts:      Predicted normalized keypoints.
-        angle_triplets: AngleTriplet list from the BodyRegion.
+        gt_kpts:    Ground truth normalised (and Procrustes-aligned) keypoints.
+        pred_kpts:  Predicted normalised keypoints.
+        bone_pairs: BonePair list from the BodyRegion.
 
     Returns:
-        Dict mapping triplet name to accuracy in [0, 1].
+        Dict mapping bone name to accuracy in [0, 1].
     """
     scores: Dict[str, float] = {}
-    for triplet in angle_triplets:
-        gt_angle   = compute_joint_angle(gt_kpts,   triplet.proximal_index, triplet.vertex_index, triplet.distal_index)
-        pred_angle = compute_joint_angle(pred_kpts, triplet.proximal_index, triplet.vertex_index, triplet.distal_index)
-        if gt_angle is not None and pred_angle is not None:
-            err = abs(gt_angle - pred_angle)
-            scores[triplet.name] = float(np.exp(-err ** 2 / (2.0 * triplet.sigma_deg ** 2)))
+    for bone in bone_pairs:
+        if (
+            bone.proximal_index not in gt_kpts or bone.distal_index not in gt_kpts
+            or bone.proximal_index not in pred_kpts or bone.distal_index not in pred_kpts
+        ):
+            continue
+
+        v_gt   = gt_kpts[bone.distal_index]   - gt_kpts[bone.proximal_index]
+        v_pred = pred_kpts[bone.distal_index] - pred_kpts[bone.proximal_index]
+
+        n_gt   = float(np.linalg.norm(v_gt))
+        n_pred = float(np.linalg.norm(v_pred))
+        if n_gt < 1e-6 or n_pred < 1e-6:
+            continue
+
+        cos_a = np.clip(np.dot(v_gt / n_gt, v_pred / n_pred), -1.0, 1.0)
+        err   = float(np.degrees(np.arccos(cos_a)))
+        scores[bone.name] = float(np.exp(-err ** 2 / (2.0 * bone.sigma_deg ** 2)))
+
     return scores

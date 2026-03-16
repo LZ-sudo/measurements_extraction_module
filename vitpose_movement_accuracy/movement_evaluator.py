@@ -27,12 +27,16 @@ from movement_accuracy_utils import (
     extract_keypoints_from_image,
     is_image_path,
     normalize_pose,
+    procrustes_align,
     build_frame_vector,
     align_with_dtw,
-    compute_angle_error,
-    compute_angle_accuracy,
+    compute_bone_angle_error,
+    compute_bone_angle_accuracy,
     CONFIDENCE_THRESHOLD,
 )
+
+# Torso landmark indices used for Procrustes rotation alignment.
+_PROCRUSTES_ANCHORS = [5, 6, 11, 12]
 
 # BGR display colors per arm region
 _REGION_COLORS: Dict[str, tuple] = {
@@ -126,19 +130,35 @@ class MovementEvaluator:
 
         self.regions: List[BodyRegion] = [REGION_REGISTRY[r] for r in self.region_names]
 
-        # Set by evaluate(); used by generate_comparison_image()
-        self._gt_raw:   Optional[List] = None
-        self._pred_raw: Optional[List] = None
+        # Set by evaluate(); used by generate_comparison_image() / generate_comparison_video()
+        self._gt_raw:            Optional[List]      = None
+        self._pred_raw:          Optional[List]      = None
+        self._warping_path:      Optional[List]      = None
+        self._gt_frame_indices:  Optional[List[int]] = None
+        self._pred_frame_indices: Optional[List[int]] = None
 
     def _collect_joint_indices(self) -> List[int]:
-        """Return a deduplicated ordered list of joint indices across all active regions."""
+        """
+        Return a deduplicated ordered list of joint indices required for DTW
+        alignment and angle computation.
+
+        Only indices referenced in angle_triplets are included. Visualization-only
+        joints (e.g. finger base chains) are intentionally excluded so that low-
+        confidence finger detections do not disqualify an otherwise valid frame.
+        """
         seen = set()
         indices = []
         for region in self.regions:
-            for joint in region.joints:
-                if joint.coco_index not in seen:
-                    indices.append(joint.coco_index)
-                    seen.add(joint.coco_index)
+            for bone in region.bone_pairs:
+                for idx in (bone.proximal_index, bone.distal_index):
+                    if idx not in seen:
+                        indices.append(idx)
+                        seen.add(idx)
+        # Torso anchors needed for Procrustes alignment and DTW orientation encoding
+        for idx in _PROCRUSTES_ANCHORS:
+            if idx not in seen:
+                indices.append(idx)
+                seen.add(idx)
         return indices
 
     def _build_valid_sequence(
@@ -216,6 +236,9 @@ class MovementEvaluator:
         gt_vectors,   gt_frame_indices   = self._build_valid_sequence(gt_raw,   joint_indices)
         pred_vectors, pred_frame_indices = self._build_valid_sequence(pred_raw, joint_indices)
 
+        self._gt_frame_indices   = gt_frame_indices
+        self._pred_frame_indices = pred_frame_indices
+
         if not gt_vectors or not pred_vectors:
             raise RuntimeError(
                 "Insufficient valid frames for evaluation. "
@@ -230,14 +253,15 @@ class MovementEvaluator:
         # Step 3: DTW alignment
         print("Running DTW alignment...")
         warping_path = align_with_dtw(gt_vectors, pred_vectors)
+        self._warping_path = warping_path
         print(f"Alignment complete. Aligned frame pairs: {len(warping_path)}")
 
-        # Step 4: Accumulate per-frame accuracy and error per triplet
+        # Step 4: Accumulate per-frame accuracy and error per bone
         region_acc_list: Dict[str, Dict[str, List[float]]] = {
-            r.name: {t.name: [] for t in r.angle_triplets} for r in self.regions
+            r.name: {b.name: [] for b in r.bone_pairs} for r in self.regions
         }
         region_err_list: Dict[str, Dict[str, List[float]]] = {
-            r.name: {t.name: [] for t in r.angle_triplets} for r in self.regions
+            r.name: {b.name: [] for b in r.bone_pairs} for r in self.regions
         }
 
         for gt_vec_idx, pred_vec_idx in warping_path:
@@ -253,37 +277,39 @@ class MovementEvaluator:
             if gt_norm is None or pred_norm is None:
                 continue
 
+            pred_norm_aligned = procrustes_align(gt_norm, pred_norm, _PROCRUSTES_ANCHORS)
+
             for region in self.regions:
-                if region.angle_triplets:
-                    acc_scores = compute_angle_accuracy(gt_norm, pred_norm, region.angle_triplets)
-                    err_scores = compute_angle_error(gt_norm, pred_norm, region.angle_triplets)
-                    for triplet_name, acc in acc_scores.items():
-                        region_acc_list[region.name][triplet_name].append(acc)
-                    for triplet_name, err in err_scores.items():
-                        region_err_list[region.name][triplet_name].append(err)
+                if region.bone_pairs:
+                    acc_scores = compute_bone_angle_accuracy(gt_norm, pred_norm_aligned, region.bone_pairs)
+                    err_scores = compute_bone_angle_error(gt_norm, pred_norm_aligned, region.bone_pairs)
+                    for bone_name, acc in acc_scores.items():
+                        region_acc_list[region.name][bone_name].append(acc)
+                    for bone_name, err in err_scores.items():
+                        region_err_list[region.name][bone_name].append(err)
 
         # Step 5: Aggregate
         results: Dict = {
-            "overall_mean_accuracy": 0.0,
-            "overall_mean_angle_error_deg": 0.0,
+            "overall_mean_accuracy":       0.0,
+            "overall_mean_bone_error_deg": 0.0,
             "regions": {},
         }
         region_acc_means: List[float] = []
         region_err_means: List[float] = []
 
         for region in self.regions:
-            triplet_entries: Dict[str, Dict] = {}
+            bone_entries: Dict[str, Dict] = {}
             all_accs: List[float] = []
             all_errs: List[float] = []
 
-            for triplet_name in region_acc_list[region.name]:
-                accs = region_acc_list[region.name][triplet_name]
-                errs = region_err_list[region.name][triplet_name]
+            for bone_name in region_acc_list[region.name]:
+                accs = region_acc_list[region.name][bone_name]
+                errs = region_err_list[region.name][bone_name]
                 mean_acc = float(np.mean(accs)) if accs else 0.0
                 mean_err = float(np.mean(errs)) if errs else 0.0
-                triplet_entries[triplet_name] = {
-                    "mean_accuracy":        mean_acc,
-                    "mean_angle_error_deg": mean_err,
+                bone_entries[bone_name] = {
+                    "mean_accuracy":       mean_acc,
+                    "mean_bone_error_deg": mean_err,
                 }
                 all_accs.extend(accs)
                 all_errs.extend(errs)
@@ -294,15 +320,15 @@ class MovementEvaluator:
             region_err_means.append(region_mean_err)
 
             results["regions"][region.name] = {
-                "mean_accuracy":        region_mean_acc,
-                "mean_angle_error_deg": region_mean_err,
-                "angles":               triplet_entries,
+                "mean_accuracy":       region_mean_acc,
+                "mean_bone_error_deg": region_mean_err,
+                "bones":               bone_entries,
             }
 
         results["overall_mean_accuracy"] = (
             float(np.mean(region_acc_means)) if region_acc_means else 0.0
         )
-        results["overall_mean_angle_error_deg"] = (
+        results["overall_mean_bone_error_deg"] = (
             float(np.mean(region_err_means)) if region_err_means else 0.0
         )
 
@@ -320,12 +346,12 @@ class MovementEvaluator:
         print("-" * 62)
         overall_pct = results["overall_mean_accuracy"] * 100
         print(
-            f"  Overall Accuracy         : "
+            f"  Overall Accuracy        : "
             f"{results['overall_mean_accuracy']:.4f}  ({overall_pct:.1f}%)"
         )
         print(
-            f"  Overall Mean Angle Error : "
-            f"{results['overall_mean_angle_error_deg']:.2f} deg"
+            f"  Overall Mean Bone Error : "
+            f"{results['overall_mean_bone_error_deg']:.2f} deg"
         )
         print()
         for region_name, rdata in results["regions"].items():
@@ -333,14 +359,14 @@ class MovementEvaluator:
             print(
                 f"  {region_name:<20} "
                 f"accuracy: {rdata['mean_accuracy']:.4f}  ({region_pct:.1f}%)"
-                f"  |  mean error: {rdata['mean_angle_error_deg']:.2f} deg"
+                f"  |  mean error: {rdata['mean_bone_error_deg']:.2f} deg"
             )
-            for angle_name, adata in rdata["angles"].items():
-                angle_pct = adata["mean_accuracy"] * 100
+            for bone_name, bdata in rdata["bones"].items():
+                bone_pct = bdata["mean_accuracy"] * 100
                 print(
-                    f"    {angle_name:<30} "
-                    f"{adata['mean_accuracy']:.4f}  ({angle_pct:.1f}%)"
-                    f"  |  {adata['mean_angle_error_deg']:.2f} deg"
+                    f"    {bone_name:<30} "
+                    f"{bdata['mean_accuracy']:.4f}  ({bone_pct:.1f}%)"
+                    f"  |  {bdata['mean_bone_error_deg']:.2f} deg"
                 )
             print()
         print(separator)
@@ -480,6 +506,112 @@ class MovementEvaluator:
         print(f"Comparison image saved to: {output_path}")
 
 
+    def generate_comparison_video(self, results: Dict, output_path: Path) -> None:
+        """
+        Generate a side-by-side comparison video with arm keypoints overlaid,
+        using DTW-aligned frame pairs so corresponding poses are shown together.
+
+        Raises RuntimeError if evaluate() has not been called first.
+        """
+        if (
+            self._gt_raw is None
+            or self._pred_raw is None
+            or self._warping_path is None
+            or self._gt_frame_indices is None
+            or self._pred_frame_indices is None
+        ):
+            raise RuntimeError(
+                "evaluate() must be called before generate_comparison_video()."
+            )
+
+        def _read_all_frames(path: Path) -> List[np.ndarray]:
+            cap = cv2.VideoCapture(str(path))
+            frames = []
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                frames.append(frame)
+            cap.release()
+            return frames
+
+        def _get_fps(path: Path) -> float:
+            cap = cv2.VideoCapture(str(path))
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            cap.release()
+            return fps if fps > 0 else 30.0
+
+        print("Reading GT video frames for comparison video...")
+        gt_frames   = _read_all_frames(self.gt_source)   if not is_image_path(self.gt_source)   else [cv2.imread(str(self.gt_source))]
+        print("Reading model video frames for comparison video...")
+        pred_frames = _read_all_frames(self.pred_source) if not is_image_path(self.pred_source) else [cv2.imread(str(self.pred_source))]
+
+        if not gt_frames or not pred_frames or gt_frames[0] is None or pred_frames[0] is None:
+            raise RuntimeError("Failed to read frames from source files.")
+
+        fps = _get_fps(self.gt_source) if not is_image_path(self.gt_source) else _get_fps(self.pred_source)
+
+        target_h = 720
+        header_h = 50
+        gap      = 10
+
+        gt_sample   = _resize_to_height(gt_frames[0],   target_h)
+        pred_sample = _resize_to_height(pred_frames[0], target_h)
+        total_w = gt_sample.shape[1] + gap + pred_sample.shape[1]
+        total_h = target_h + header_h
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        writer = cv2.VideoWriter(str(output_path), fourcc, fps, (total_w, total_h))
+
+        font      = cv2.FONT_HERSHEY_SIMPLEX
+        thickness = 2
+        overall_pct = results["overall_mean_accuracy"] * 100
+        acc_text    = f"Overall: {overall_pct:.1f}%"
+        (tw, _), _  = cv2.getTextSize(acc_text, font, 0.8, thickness)
+
+        print(f"Writing {len(self._warping_path)} aligned frames to comparison video...")
+
+        for gt_vec_idx, pred_vec_idx in self._warping_path:
+            gt_frame_idx   = self._gt_frame_indices[gt_vec_idx]
+            pred_frame_idx = self._pred_frame_indices[pred_vec_idx]
+
+            gt_frame   = gt_frames[gt_frame_idx]   if gt_frame_idx   < len(gt_frames)   else gt_frames[-1]
+            pred_frame = pred_frames[pred_frame_idx] if pred_frame_idx < len(pred_frames) else pred_frames[-1]
+
+            gt_kpts   = self._gt_raw[gt_frame_idx]
+            pred_kpts = self._pred_raw[pred_frame_idx]
+
+            gt_vis   = _resize_to_height(self._draw_keypoints_on_image(gt_frame,   gt_kpts),   target_h)
+            pred_vis = _resize_to_height(self._draw_keypoints_on_image(pred_frame, pred_kpts), target_h)
+
+            canvas = np.zeros((total_h, total_w, 3), dtype=np.uint8)
+            canvas[header_h:, :gt_vis.shape[1]]       = gt_vis
+            canvas[header_h:, gt_vis.shape[1] + gap:] = pred_vis
+
+            cv2.putText(canvas, "Ground Truth", (10, 34),
+                        font, 0.8, (220, 220, 220), thickness)
+            cv2.putText(canvas, "Model", (gt_vis.shape[1] + gap + 10, 34),
+                        font, 0.8, (220, 220, 220), thickness)
+            cv2.putText(canvas, acc_text, (total_w - tw - 10, 34),
+                        font, 0.8, (50, 220, 50), thickness)
+
+            y_legend = header_h + 22
+            for region_name in self.region_names:
+                color = _REGION_COLORS.get(region_name, (180, 180, 180))
+                rdata = results["regions"].get(region_name, {})
+                pct   = rdata.get("mean_accuracy", 0.0) * 100
+                label = f"{region_name}: {pct:.1f}%"
+                cv2.rectangle(canvas, (10, y_legend - 12), (24, y_legend + 2), color, -1)
+                cv2.putText(canvas, label, (30, y_legend), font, 0.55, (220, 220, 220), 1)
+                y_legend += 22
+
+            writer.write(canvas)
+
+        writer.release()
+        print(f"Comparison video saved to: {output_path}")
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Evaluate movement replication accuracy between two sources using ViTPose."
@@ -536,4 +668,8 @@ if __name__ == "__main__":
         if is_image_path(evaluator.gt_source) and is_image_path(evaluator.pred_source):
             evaluator.generate_comparison_image(
                 results, output_dir / f"{stem}_comparison.png"
+            )
+        else:
+            evaluator.generate_comparison_video(
+                results, output_dir / f"{stem}_comparison.mp4"
             )
