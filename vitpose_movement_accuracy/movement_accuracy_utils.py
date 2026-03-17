@@ -8,11 +8,10 @@ computation.
 
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import cv2
 import numpy as np
-from dtaidistance import dtw_ndim
 from easy_ViTPose import VitInference
 
 # Add the measurements_extraction_module directory to sys.path so that
@@ -307,23 +306,6 @@ def build_frame_vector(
     return np.concatenate(coords)
 
 
-def align_with_dtw(
-    gt_vectors: List[np.ndarray],
-    pred_vectors: List[np.ndarray],
-) -> List[Tuple[int, int]]:
-    """
-    Align two pose sequences temporally using Dynamic Time Warping.
-
-    Args:
-        gt_vectors: Per-frame flattened joint vectors for the ground truth sequence.
-        pred_vectors: Per-frame flattened joint vectors for the predicted sequence.
-
-    Returns:
-        List of (gt_frame_idx, pred_frame_idx) pairs representing the optimal alignment.
-    """
-    gt_array   = np.array(gt_vectors,   dtype=np.float64)
-    pred_array = np.array(pred_vectors, dtype=np.float64)
-    return dtw_ndim.warping_path(gt_array, pred_array)
 
 
 def compute_bone_angle_error(

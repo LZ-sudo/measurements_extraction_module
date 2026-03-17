@@ -15,8 +15,10 @@ Usage (CLI):
 
 import argparse
 import json
+import re
+import sys
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -29,7 +31,6 @@ from movement_accuracy_utils import (
     normalize_pose,
     procrustes_align,
     build_frame_vector,
-    align_with_dtw,
     compute_bone_angle_error,
     compute_bone_angle_accuracy,
     CONFIDENCE_THRESHOLD,
@@ -232,29 +233,36 @@ class MovementEvaluator:
         self._gt_raw   = gt_raw
         self._pred_raw = pred_raw
 
-        # Step 2: Build DTW-compatible sequences (normalized, valid frames only)
-        gt_vectors,   gt_frame_indices   = self._build_valid_sequence(gt_raw,   joint_indices)
-        pred_vectors, pred_frame_indices = self._build_valid_sequence(pred_raw, joint_indices)
+        # Step 2: Build frame pairing
+        # For image inputs, bypass frame vector building entirely — the metric
+        # functions already skip individual bones whose endpoints are missing,
+        # so there is no need for the all-or-nothing joint gate used by
+        # build_frame_vector (which was designed for DTW alignment).
+        # For video inputs, filter to frames where all tracked joints are visible.
+        if is_image_path(self.gt_source) and is_image_path(self.pred_source):
+            gt_frame_indices         = [0]
+            pred_frame_indices       = [0]
+            self._gt_frame_indices   = gt_frame_indices
+            self._pred_frame_indices = pred_frame_indices
+            warping_path = [(0, 0)]
+        else:
+            gt_vectors,   gt_frame_indices   = self._build_valid_sequence(gt_raw,   joint_indices)
+            pred_vectors, pred_frame_indices = self._build_valid_sequence(pred_raw, joint_indices)
 
-        self._gt_frame_indices   = gt_frame_indices
-        self._pred_frame_indices = pred_frame_indices
+            self._gt_frame_indices   = gt_frame_indices
+            self._pred_frame_indices = pred_frame_indices
 
-        if not gt_vectors or not pred_vectors:
-            raise RuntimeError(
-                "Insufficient valid frames for evaluation. "
-                "Check that the tracked joints are visible throughout the videos."
-            )
+            if not gt_vectors or not pred_vectors:
+                raise RuntimeError(
+                    "Insufficient valid frames for evaluation. "
+                    "Check that the tracked joints are visible throughout the videos."
+                )
 
-        print(
-            f"\nValid frames for DTW  GT: {len(gt_vectors)}"
-            f"  Model: {len(pred_vectors)}"
-        )
+            print(f"\nValid frames  GT: {len(gt_vectors)}  Model: {len(pred_vectors)}")
+            n = min(len(gt_vectors), len(pred_vectors))
+            warping_path = list(zip(range(n), range(n)))
 
-        # Step 3: DTW alignment
-        print("Running DTW alignment...")
-        warping_path = align_with_dtw(gt_vectors, pred_vectors)
         self._warping_path = warping_path
-        print(f"Alignment complete. Aligned frame pairs: {len(warping_path)}")
 
         # Step 4: Accumulate per-frame accuracy and error per bone
         region_acc_list: Dict[str, Dict[str, List[float]]] = {
@@ -287,6 +295,20 @@ class MovementEvaluator:
                         region_acc_list[region.name][bone_name].append(acc)
                     for bone_name, err in err_scores.items():
                         region_err_list[region.name][bone_name].append(err)
+
+        # Guard: if no bone metrics were accumulated at all (e.g. normalize_pose
+        # failed for every frame because torso anchors were undetectable), raise
+        # so the caller can mark this pair as UNKNOWN rather than show 0%.
+        any_metrics = any(
+            len(accs) > 0
+            for r_accs in region_acc_list.values()
+            for accs in r_accs.values()
+        )
+        if not any_metrics:
+            raise RuntimeError(
+                "No bone metrics could be computed. "
+                "Check that the torso and arm joints are visible in both images."
+            )
 
         # Step 5: Aggregate
         results: Dict = {
@@ -441,20 +463,21 @@ class MovementEvaluator:
 
         return img
 
-    def generate_comparison_image(self, results: Dict, output_path: Path) -> None:
+    def generate_comparison_image(
+        self,
+        results: Optional[Dict],
+        output_path: Path,
+    ) -> None:
         """
         Generate a side-by-side comparison image with arm keypoints overlaid.
 
-        Only supported when both sources are image files. Raises RuntimeError
-        for video inputs or if evaluate() has not been called.
+        results may be None when evaluation failed (e.g. insufficient landmark
+        confidence). In that case keypoints are still drawn where detectable
+        and the accuracy indicator shows UNKNOWN.
         """
         if not (is_image_path(self.gt_source) and is_image_path(self.pred_source)):
             raise RuntimeError(
                 "Comparison visualization is only supported for image inputs."
-            )
-        if self._gt_raw is None or self._pred_raw is None:
-            raise RuntimeError(
-                "evaluate() must be called before generate_comparison_image()."
             )
 
         gt_img   = cv2.imread(str(self.gt_source))
@@ -462,8 +485,11 @@ class MovementEvaluator:
         if gt_img is None or pred_img is None:
             raise RuntimeError("Failed to read source images for visualization.")
 
-        gt_vis   = self._draw_keypoints_on_image(gt_img,   self._gt_raw[0])
-        pred_vis = self._draw_keypoints_on_image(pred_img, self._pred_raw[0])
+        gt_kpts   = self._gt_raw[0]   if self._gt_raw   is not None else None
+        pred_kpts = self._pred_raw[0] if self._pred_raw is not None else None
+
+        gt_vis   = self._draw_keypoints_on_image(gt_img,   gt_kpts)
+        pred_vis = self._draw_keypoints_on_image(pred_img, pred_kpts)
 
         target_h = 720
         gt_vis   = _resize_to_height(gt_vis,   target_h)
@@ -474,8 +500,8 @@ class MovementEvaluator:
         total_w  = gt_vis.shape[1] + gap + pred_vis.shape[1]
         canvas   = np.zeros((target_h + header_h, total_w, 3), dtype=np.uint8)
 
-        canvas[header_h:, :gt_vis.shape[1]]          = gt_vis
-        canvas[header_h:, gt_vis.shape[1] + gap:]    = pred_vis
+        canvas[header_h:, :gt_vis.shape[1]]       = gt_vis
+        canvas[header_h:, gt_vis.shape[1] + gap:] = pred_vis
 
         font      = cv2.FONT_HERSHEY_SIMPLEX
         thickness = 2
@@ -485,18 +511,27 @@ class MovementEvaluator:
         cv2.putText(canvas, "Model", (gt_vis.shape[1] + gap + 10, 34),
                     font, 0.8, (220, 220, 220), thickness)
 
-        overall_pct = results["overall_mean_accuracy"] * 100
-        acc_text    = f"Overall: {overall_pct:.1f}%"
-        (tw, _), _  = cv2.getTextSize(acc_text, font, 0.8, thickness)
+        if results is not None:
+            overall_pct = results["overall_mean_accuracy"] * 100
+            acc_text    = f"Accuracy: {overall_pct:.1f}%"
+            acc_color   = (50, 220, 50)
+        else:
+            acc_text  = "Accuracy: UNKNOWN"
+            acc_color = (80, 80, 220)
+
+        (tw, _), _ = cv2.getTextSize(acc_text, font, 0.8, thickness)
         cv2.putText(canvas, acc_text, (total_w - tw - 10, 34),
-                    font, 0.8, (50, 220, 50), thickness)
+                    font, 0.8, acc_color, thickness)
 
         y_legend = header_h + 22
         for region_name in self.region_names:
             color = _REGION_COLORS.get(region_name, (180, 180, 180))
-            rdata = results["regions"].get(region_name, {})
-            pct   = rdata.get("mean_accuracy", 0.0) * 100
-            label = f"{region_name}: {pct:.1f}%"
+            if results is not None:
+                rdata = results["regions"].get(region_name, {})
+                pct   = rdata.get("mean_accuracy", 0.0) * 100
+                label = f"{region_name}: {pct:.1f}%"
+            else:
+                label = f"{region_name}: UNKNOWN"
             cv2.rectangle(canvas, (10, y_legend - 12), (24, y_legend + 2), color, -1)
             cv2.putText(canvas, label, (30, y_legend), font, 0.55, (220, 220, 220), 1)
             y_legend += 22
@@ -612,6 +647,67 @@ class MovementEvaluator:
         print(f"Comparison video saved to: {output_path}")
 
 
+def _pair_image_directories(
+    gt_dir: Path,
+    pred_dir: Path,
+) -> List[Tuple[str, Path, Path]]:
+    """
+    Pair image files from two directories by the first numeric sequence found
+    in each filename. Files are matched when their numeric key is the same in
+    both directories (e.g. pose_1_gt.jpg pairs with pose_1_model.jpg via key "1").
+
+    Returns a list of (key, gt_path, pred_path) tuples sorted by ascending
+    numeric key value.
+    """
+    def _key(path: Path) -> Optional[str]:
+        m = re.search(r'\d+', path.stem)
+        return m.group(0) if m else None
+
+    gt_map   = {_key(p): p for p in sorted(gt_dir.iterdir())   if is_image_path(p) and _key(p)}
+    pred_map = {_key(p): p for p in sorted(pred_dir.iterdir()) if is_image_path(p) and _key(p)}
+    common   = sorted(set(gt_map) & set(pred_map), key=lambda k: int(k))
+    return [(k, gt_map[k], pred_map[k]) for k in common]
+
+
+def _generate_slideshow_video(
+    image_paths: List[Path],
+    output_path: Path,
+    fps: int = 30,
+    hold_seconds: int = 2,
+) -> None:
+    """
+    Compile a list of comparison images into a slideshow MP4, holding each
+    image for hold_seconds before advancing to the next.
+
+    Images that differ in size from the first are resized to match.
+    """
+    if not image_paths:
+        return
+
+    first = cv2.imread(str(image_paths[0]))
+    if first is None:
+        print("Failed to read comparison images for slideshow.")
+        return
+
+    h, w              = first.shape[:2]
+    frames_per_image  = fps * hold_seconds
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    writer = cv2.VideoWriter(str(output_path), fourcc, fps, (w, h))
+
+    for img_path in image_paths:
+        img = cv2.imread(str(img_path))
+        if img is None:
+            continue
+        if img.shape[:2] != (h, w):
+            img = cv2.resize(img, (w, h))
+        for _ in range(frames_per_image):
+            writer.write(img)
+
+    writer.release()
+    print(f"Slideshow saved to: {output_path}")
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Evaluate movement replication accuracy between two sources using ViTPose."
@@ -651,25 +747,73 @@ def _parse_args() -> argparse.Namespace:
 if __name__ == "__main__":
     args = _parse_args()
 
-    evaluator = MovementEvaluator(
-        gt_source=args.gt,
-        pred_source=args.pred,
-        regions=args.regions,
-        device=args.device,
-    )
+    gt_path   = Path(args.gt)
+    pred_path = Path(args.pred)
 
-    results = evaluator.evaluate()
-    evaluator.print_results(results)
+    if gt_path.is_dir() and pred_path.is_dir():
+        # --- Directory mode: batch process paired images ---
+        pairs = _pair_image_directories(gt_path, pred_path)
+        if not pairs:
+            print("No matching image pairs found in the provided directories.")
+            sys.exit(1)
 
-    if args.output_dir:
-        output_dir = Path(args.output_dir)
-        stem = f"{evaluator.gt_source.stem}_vs_{evaluator.pred_source.stem}"
-        evaluator.save_results(results, output_dir / f"{stem}_results.json")
-        if is_image_path(evaluator.gt_source) and is_image_path(evaluator.pred_source):
-            evaluator.generate_comparison_image(
-                results, output_dir / f"{stem}_comparison.png"
+        print(f"Found {len(pairs)} image pair(s): {[k for k, _, _ in pairs]}")
+
+        output_dir = Path(args.output_dir) if args.output_dir else gt_path.parent / "comparison_output"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        comparison_image_paths: List[Path] = []
+
+        for key, gt_file, pred_file in pairs:
+            print(f"\n{'=' * 62}")
+            print(f"  Pair {key}:  {gt_file.name}  vs  {pred_file.name}")
+            print(f"{'=' * 62}")
+
+            evaluator = MovementEvaluator(
+                gt_source=str(gt_file),
+                pred_source=str(pred_file),
+                regions=args.regions,
+                device=args.device,
             )
-        else:
-            evaluator.generate_comparison_video(
-                results, output_dir / f"{stem}_comparison.mp4"
-            )
+
+            results = None
+            try:
+                results = evaluator.evaluate()
+                evaluator.print_results(results)
+                evaluator.save_results(results, output_dir / f"{key}_results.json")
+            except RuntimeError as exc:
+                print(f"  Evaluation failed: {exc}")
+
+            comp_path = output_dir / f"{key}_comparison.png"
+            evaluator.generate_comparison_image(results, comp_path)
+            comparison_image_paths.append(comp_path)
+
+        _generate_slideshow_video(
+            comparison_image_paths,
+            output_dir / "comparison_slideshow.mp4",
+        )
+
+    else:
+        # --- Single file mode ---
+        evaluator = MovementEvaluator(
+            gt_source=args.gt,
+            pred_source=args.pred,
+            regions=args.regions,
+            device=args.device,
+        )
+
+        results = evaluator.evaluate()
+        evaluator.print_results(results)
+
+        if args.output_dir:
+            output_dir = Path(args.output_dir)
+            stem = f"{evaluator.gt_source.stem}_vs_{evaluator.pred_source.stem}"
+            evaluator.save_results(results, output_dir / f"{stem}_results.json")
+            if is_image_path(evaluator.gt_source) and is_image_path(evaluator.pred_source):
+                evaluator.generate_comparison_image(
+                    results, output_dir / f"{stem}_comparison.png"
+                )
+            else:
+                evaluator.generate_comparison_video(
+                    results, output_dir / f"{stem}_comparison.mp4"
+                )
