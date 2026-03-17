@@ -29,15 +29,11 @@ from movement_accuracy_utils import (
     extract_keypoints_from_image,
     is_image_path,
     normalize_pose,
-    procrustes_align,
     build_frame_vector,
-    compute_bone_angle_error,
-    compute_bone_angle_accuracy,
+    compute_angle_error,
+    compute_angle_accuracy,
     CONFIDENCE_THRESHOLD,
 )
-
-# Torso landmark indices used for Procrustes rotation alignment.
-_PROCRUSTES_ANCHORS = [5, 6, 11, 12]
 
 # BGR display colors per arm region
 _REGION_COLORS: Dict[str, tuple] = {
@@ -140,23 +136,26 @@ class MovementEvaluator:
 
     def _collect_joint_indices(self) -> List[int]:
         """
-        Return a deduplicated ordered list of joint indices required for DTW
-        alignment and angle computation.
+        Return a deduplicated ordered list of joint indices required for frame
+        filtering and angle computation.
 
         Only indices referenced in angle_triplets are included. Visualization-only
         joints (e.g. finger base chains) are intentionally excluded so that low-
         confidence finger detections do not disqualify an otherwise valid frame.
+        Torso anchors (5, 6, 11, 12) are included implicitly via the shoulder
+        angle triplets but are also added explicitly as a safety net for
+        normalize_pose.
         """
         seen = set()
         indices = []
         for region in self.regions:
-            for bone in region.bone_pairs:
-                for idx in (bone.proximal_index, bone.distal_index):
+            for triplet in region.angle_triplets:
+                for idx in (triplet.vertex_index, triplet.a_index, triplet.b_index):
                     if idx not in seen:
                         indices.append(idx)
                         seen.add(idx)
-        # Torso anchors needed for Procrustes alignment and DTW orientation encoding
-        for idx in _PROCRUSTES_ANCHORS:
+        # Explicit torso anchors required by normalize_pose
+        for idx in (5, 6, 11, 12):
             if idx not in seen:
                 indices.append(idx)
                 seen.add(idx)
@@ -264,12 +263,14 @@ class MovementEvaluator:
 
         self._warping_path = warping_path
 
-        # Step 4: Accumulate per-frame accuracy and error per bone
+        # Step 4: Accumulate per-frame accuracy and error per angle triplet
         region_acc_list: Dict[str, Dict[str, List[float]]] = {
-            r.name: {b.name: [] for b in r.bone_pairs} for r in self.regions
+            r.name: {triplet.name: [] for triplet in r.angle_triplets}
+            for r in self.regions
         }
         region_err_list: Dict[str, Dict[str, List[float]]] = {
-            r.name: {b.name: [] for b in r.bone_pairs} for r in self.regions
+            r.name: {triplet.name: [] for triplet in r.angle_triplets}
+            for r in self.regions
         }
 
         for gt_vec_idx, pred_vec_idx in warping_path:
@@ -285,20 +286,17 @@ class MovementEvaluator:
             if gt_norm is None or pred_norm is None:
                 continue
 
-            pred_norm_aligned = procrustes_align(gt_norm, pred_norm, _PROCRUSTES_ANCHORS)
-
             for region in self.regions:
-                if region.bone_pairs:
-                    acc_scores = compute_bone_angle_accuracy(gt_norm, pred_norm_aligned, region.bone_pairs)
-                    err_scores = compute_bone_angle_error(gt_norm, pred_norm_aligned, region.bone_pairs)
-                    for bone_name, acc in acc_scores.items():
-                        region_acc_list[region.name][bone_name].append(acc)
-                    for bone_name, err in err_scores.items():
-                        region_err_list[region.name][bone_name].append(err)
+                if region.angle_triplets:
+                    acc_scores = compute_angle_accuracy(gt_norm, pred_norm, region.angle_triplets)
+                    err_scores = compute_angle_error(gt_norm, pred_norm, region.angle_triplets)
+                    for name, acc in acc_scores.items():
+                        region_acc_list[region.name][name].append(acc)
+                    for name, err in err_scores.items():
+                        region_err_list[region.name][name].append(err)
 
-        # Guard: if no bone metrics were accumulated at all (e.g. normalize_pose
-        # failed for every frame because torso anchors were undetectable), raise
-        # so the caller can mark this pair as UNKNOWN rather than show 0%.
+        # Guard: if no metrics were accumulated at all raise so the caller
+        # can mark this pair as UNKNOWN rather than show 0%.
         any_metrics = any(
             len(accs) > 0
             for r_accs in region_acc_list.values()
@@ -306,32 +304,32 @@ class MovementEvaluator:
         )
         if not any_metrics:
             raise RuntimeError(
-                "No bone metrics could be computed. "
+                "No angle metrics could be computed. "
                 "Check that the torso and arm joints are visible in both images."
             )
 
         # Step 5: Aggregate
         results: Dict = {
-            "overall_mean_accuracy":       0.0,
-            "overall_mean_bone_error_deg": 0.0,
+            "overall_mean_accuracy":        0.0,
+            "overall_mean_angle_error_deg": 0.0,
             "regions": {},
         }
         region_acc_means: List[float] = []
         region_err_means: List[float] = []
 
         for region in self.regions:
-            bone_entries: Dict[str, Dict] = {}
+            angle_entries: Dict[str, Dict] = {}
             all_accs: List[float] = []
             all_errs: List[float] = []
 
-            for bone_name in region_acc_list[region.name]:
-                accs = region_acc_list[region.name][bone_name]
-                errs = region_err_list[region.name][bone_name]
+            for triplet_name in region_acc_list[region.name]:
+                accs = region_acc_list[region.name][triplet_name]
+                errs = region_err_list[region.name][triplet_name]
                 mean_acc = float(np.mean(accs)) if accs else 0.0
                 mean_err = float(np.mean(errs)) if errs else 0.0
-                bone_entries[bone_name] = {
-                    "mean_accuracy":       mean_acc,
-                    "mean_bone_error_deg": mean_err,
+                angle_entries[triplet_name] = {
+                    "mean_accuracy":        mean_acc,
+                    "mean_angle_error_deg": mean_err,
                 }
                 all_accs.extend(accs)
                 all_errs.extend(errs)
@@ -342,15 +340,15 @@ class MovementEvaluator:
             region_err_means.append(region_mean_err)
 
             results["regions"][region.name] = {
-                "mean_accuracy":       region_mean_acc,
-                "mean_bone_error_deg": region_mean_err,
-                "bones":               bone_entries,
+                "mean_accuracy":        region_mean_acc,
+                "mean_angle_error_deg": region_mean_err,
+                "angles":               angle_entries,
             }
 
         results["overall_mean_accuracy"] = (
             float(np.mean(region_acc_means)) if region_acc_means else 0.0
         )
-        results["overall_mean_bone_error_deg"] = (
+        results["overall_mean_angle_error_deg"] = (
             float(np.mean(region_err_means)) if region_err_means else 0.0
         )
 
@@ -366,29 +364,26 @@ class MovementEvaluator:
         print(f"  Model Source : {self.pred_source.name}")
         print(f"  Regions      : {', '.join(self.region_names)}")
         print("-" * 62)
-        overall_pct = results["overall_mean_accuracy"] * 100
         print(
-            f"  Overall Accuracy        : "
-            f"{results['overall_mean_accuracy']:.4f}  ({overall_pct:.1f}%)"
+            f"  Overall Accuracy          : "
+            f"{results['overall_mean_accuracy'] * 100:.1f}%"
         )
         print(
-            f"  Overall Mean Bone Error : "
-            f"{results['overall_mean_bone_error_deg']:.2f} deg"
+            f"  Overall Mean Angle Error  : "
+            f"{results['overall_mean_angle_error_deg']:.1f} deg"
         )
         print()
         for region_name, rdata in results["regions"].items():
-            region_pct = rdata["mean_accuracy"] * 100
             print(
                 f"  {region_name:<20} "
-                f"accuracy: {rdata['mean_accuracy']:.4f}  ({region_pct:.1f}%)"
-                f"  |  mean error: {rdata['mean_bone_error_deg']:.2f} deg"
+                f"accuracy: {rdata['mean_accuracy'] * 100:.1f}%"
+                f"  |  mean error: {rdata['mean_angle_error_deg']:.1f} deg"
             )
-            for bone_name, bdata in rdata["bones"].items():
-                bone_pct = bdata["mean_accuracy"] * 100
+            for triplet_name, adata in rdata["angles"].items():
                 print(
-                    f"    {bone_name:<30} "
-                    f"{bdata['mean_accuracy']:.4f}  ({bone_pct:.1f}%)"
-                    f"  |  {bdata['mean_bone_error_deg']:.2f} deg"
+                    f"    {triplet_name:<34} "
+                    f"{adata['mean_accuracy'] * 100:.1f}%"
+                    f"  |  {adata['mean_angle_error_deg']:.1f} deg"
                 )
             print()
         print(separator)
@@ -513,15 +508,22 @@ class MovementEvaluator:
 
         if results is not None:
             overall_pct = results["overall_mean_accuracy"] * 100
+            overall_err = results["overall_mean_angle_error_deg"]
             acc_text    = f"Accuracy: {overall_pct:.1f}%"
+            sub_text    = f"Angle error: {overall_err:.1f} deg"
             acc_color   = (50, 220, 50)
         else:
             acc_text  = "Accuracy: UNKNOWN"
+            sub_text  = ""
             acc_color = (80, 80, 220)
 
         (tw, _), _ = cv2.getTextSize(acc_text, font, 0.8, thickness)
         cv2.putText(canvas, acc_text, (total_w - tw - 10, 34),
                     font, 0.8, acc_color, thickness)
+        if sub_text:
+            (stw, _), _ = cv2.getTextSize(sub_text, font, 0.55, 1)
+            cv2.putText(canvas, sub_text, (total_w - stw - 10, header_h + 18),
+                        font, 0.55, (160, 220, 160), 1)
 
         y_legend = header_h + 22
         for region_name in self.region_names:
@@ -529,11 +531,12 @@ class MovementEvaluator:
             if results is not None:
                 rdata = results["regions"].get(region_name, {})
                 pct   = rdata.get("mean_accuracy", 0.0) * 100
-                label = f"{region_name}: {pct:.1f}%"
+                err   = rdata.get("mean_angle_error_deg", 0.0)
+                label = f"{region_name}: {pct:.1f}%  ({err:.1f} deg)"
             else:
                 label = f"{region_name}: UNKNOWN"
             cv2.rectangle(canvas, (10, y_legend - 12), (24, y_legend + 2), color, -1)
-            cv2.putText(canvas, label, (30, y_legend), font, 0.55, (220, 220, 220), 1)
+            cv2.putText(canvas, label, (30, y_legend), font, 0.5, (220, 220, 220), 1)
             y_legend += 22
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -602,7 +605,7 @@ class MovementEvaluator:
         font      = cv2.FONT_HERSHEY_SIMPLEX
         thickness = 2
         overall_pct = results["overall_mean_accuracy"] * 100
-        acc_text    = f"Overall: {overall_pct:.1f}%"
+        acc_text    = f"Accuracy: {overall_pct:.1f}%"
         (tw, _), _  = cv2.getTextSize(acc_text, font, 0.8, thickness)
 
         print(f"Writing {len(self._warping_path)} aligned frames to comparison video...")
@@ -636,7 +639,8 @@ class MovementEvaluator:
                 color = _REGION_COLORS.get(region_name, (180, 180, 180))
                 rdata = results["regions"].get(region_name, {})
                 pct   = rdata.get("mean_accuracy", 0.0) * 100
-                label = f"{region_name}: {pct:.1f}%"
+                err   = rdata.get("mean_angle_error_deg", 0.0)
+                label = f"{region_name}: {pct:.1f}%  ({err:.1f} deg)"
                 cv2.rectangle(canvas, (10, y_legend - 12), (24, y_legend + 2), color, -1)
                 cv2.putText(canvas, label, (30, y_legend), font, 0.55, (220, 220, 220), 1)
                 y_legend += 22

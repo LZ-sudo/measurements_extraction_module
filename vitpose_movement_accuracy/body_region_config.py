@@ -2,11 +2,16 @@
 Body Region Configuration for Movement Accuracy Evaluation
 
 Defines configurable body regions with their COCO-WholeBody keypoint indices
-and bone pairs for direction-based accuracy computation.
+and angle triplets for interior-angle-based accuracy computation.
 
-Each arm region includes the ipsilateral arm chain, the contralateral shoulder,
-and both hips as reference landmarks so that DTW alignment and visualisation
-always carry the full torso frame of reference.
+Accuracy is measured by computing the interior angle at each joint vertex
+from three keypoint indices (vertex, arm-A, arm-B) in the torso-normalised
+coordinate frame. Using angles rather than absolute positions makes the metric
+invariant to subject scale, camera distance, and the avatar's global position
+in frame.
+
+sigma_deg controls the Gaussian accuracy falloff: accuracy ~= 0.61 when the
+angular error equals sigma_deg.
 """
 
 from typing import Dict, List
@@ -19,31 +24,19 @@ class JointInfo(BaseModel):
     coco_index: int
 
 
-class BonePair(BaseModel):
+class AngleTriplet(BaseModel):
     name: str
-    proximal_index: int
-    distal_index: int
-    sigma_deg: float  # bone direction tolerance in degrees; accuracy ~= 0.61 at this error
+    vertex_index: int  # joint where the angle is measured
+    a_index: int       # proximal landmark (first arm of the angle)
+    b_index: int       # distal landmark (second arm of the angle)
+    sigma_deg: float   # angular tolerance in degrees
 
 
 class BodyRegion(BaseModel):
     name: str
     joints: List[JointInfo]
-    bone_pairs: List[BonePair] = []
+    angle_triplets: List[AngleTriplet] = []
 
-
-# COCO-WholeBody hand keypoint layout (21 points per hand, offsets from hand base):
-#   +0:  wrist
-#   +1:  thumb CMC    +2:  thumb MCP    +3:  thumb IP     +4:  thumb TIP
-#   +5:  index MCP    +6:  index PIP    +7:  index DIP    +8:  index TIP
-#   +9:  middle MCP   +10: middle PIP   +11: middle DIP   +12: middle TIP
-#   +13: ring MCP     +14: ring PIP     +15: ring DIP     +16: ring TIP
-#   +17: pinky MCP    +18: pinky PIP    +19: pinky DIP    +20: pinky TIP
-#
-# Left hand base index: 91   Right hand base index: 112
-# Base knuckle indices (left / right) — CMC for thumb, MCP for all other fingers:
-#   thumb CMC: 92 / 113    index MCP:  96 / 117    middle MCP: 100 / 121
-#   ring MCP: 104 / 125    pinky MCP: 108 / 129
 
 LEFT_ARM = BodyRegion(
     name="left_arm",
@@ -62,25 +55,11 @@ LEFT_ARM = BodyRegion(
         JointInfo(name="left_hip",         coco_index=11),
         JointInfo(name="right_hip",        coco_index=12),
     ],
-    bone_pairs=[
-        BonePair(
-            name="upper_arm_left",
-            proximal_index=5,
-            distal_index=7,
-            sigma_deg=15.0,
-        ),
-        BonePair(
-            name="forearm_left",
-            proximal_index=7,
-            distal_index=9,
-            sigma_deg=15.0,
-        ),
-        BonePair(
-            name="hand_left",
-            proximal_index=9,
-            distal_index=96,
-            sigma_deg=20.0,
-        ),
+    angle_triplets=[
+        # Arm elevation: angle at the shoulder between the torso side and upper arm
+        AngleTriplet(name="left_shoulder_angle", vertex_index=5,  a_index=11, b_index=7,  sigma_deg=15.0),
+        # Elbow flexion: angle at the elbow between the upper arm and forearm
+        AngleTriplet(name="left_elbow_angle",    vertex_index=7,  a_index=5,  b_index=9,  sigma_deg=15.0),
     ],
 )
 
@@ -101,25 +80,11 @@ RIGHT_ARM = BodyRegion(
         JointInfo(name="left_hip",         coco_index=11),
         JointInfo(name="right_hip",        coco_index=12),
     ],
-    bone_pairs=[
-        BonePair(
-            name="upper_arm_right",
-            proximal_index=6,
-            distal_index=8,
-            sigma_deg=15.0,
-        ),
-        BonePair(
-            name="forearm_right",
-            proximal_index=8,
-            distal_index=10,
-            sigma_deg=15.0,
-        ),
-        BonePair(
-            name="hand_right",
-            proximal_index=10,
-            distal_index=117,
-            sigma_deg=20.0,
-        ),
+    angle_triplets=[
+        # Arm elevation: angle at the shoulder between the torso side and upper arm
+        AngleTriplet(name="right_shoulder_angle", vertex_index=6,  a_index=12, b_index=8,  sigma_deg=15.0),
+        # Elbow flexion: angle at the elbow between the upper arm and forearm
+        AngleTriplet(name="right_elbow_angle",    vertex_index=8,  a_index=6,  b_index=10, sigma_deg=15.0),
     ],
 )
 

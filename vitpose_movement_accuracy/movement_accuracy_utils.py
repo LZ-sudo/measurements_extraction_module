@@ -2,8 +2,7 @@
 Movement Accuracy Utility Functions
 
 Provides keypoint extraction from video or image, torso-relative pose normalization,
-Procrustes rotation alignment, DTW temporal alignment, and bone direction error
-computation.
+and joint interior-angle error computation.
 """
 
 import sys
@@ -22,7 +21,7 @@ if str(_MEASUREMENTS_DIR) not in sys.path:
     sys.path.insert(0, str(_MEASUREMENTS_DIR))
 
 from vitpose_detection.config_model import get_model_paths
-from body_region_config import BonePair
+from body_region_config import AngleTriplet
 
 
 # Minimum confidence score for a keypoint to be considered valid.
@@ -247,47 +246,6 @@ def normalize_pose(frame_kpts: np.ndarray) -> Optional[Dict[int, np.ndarray]]:
     return normalized
 
 
-def procrustes_align(
-    gt_kpts: Dict[int, np.ndarray],
-    pred_kpts: Dict[int, np.ndarray],
-    anchor_indices: List[int],
-) -> Dict[int, np.ndarray]:
-    """
-    Apply the optimal 2D rotation to pred_kpts to align it with gt_kpts,
-    using the Kabsch algorithm on the provided anchor landmarks.
-
-    Both inputs are assumed to already be torso-normalised (translation and
-    scale removed). This step removes the residual rotation difference caused
-    by camera angle variance between the two recordings.
-
-    Returns the rotated pred keypoints. If fewer than two common anchors are
-    available, the original pred_kpts are returned unchanged.
-
-    Args:
-        gt_kpts:         Ground truth normalised keypoints.
-        pred_kpts:       Predicted normalised keypoints.
-        anchor_indices:  COCO indices to use as alignment landmarks.
-
-    Returns:
-        Dict of rotated pred keypoints (same keys as pred_kpts).
-    """
-    common = [idx for idx in anchor_indices if idx in gt_kpts and idx in pred_kpts]
-    if len(common) < 2:
-        return pred_kpts
-
-    gt_pts   = np.array([gt_kpts[idx]   for idx in common])   # (N, 2)
-    pred_pts = np.array([pred_kpts[idx] for idx in common])   # (N, 2)
-
-    # Kabsch algorithm: find R minimising ||R @ pred_pts.T - gt_pts.T||
-    H = pred_pts.T @ gt_pts                                    # (2, 2)
-    U, _, Vt = np.linalg.svd(H)
-    V = Vt.T
-    d = np.linalg.det(V @ U.T)
-    R = V @ np.diag([1.0, d]) @ U.T                           # (2, 2) rotation
-
-    return {idx: R @ v for idx, v in pred_kpts.items()}
-
-
 def build_frame_vector(
     normalized_kpts: Dict[int, np.ndarray],
     joint_indices: List[int],
@@ -308,85 +266,81 @@ def build_frame_vector(
 
 
 
-def compute_bone_angle_error(
+def _angle_between(
+    a: np.ndarray,
+    vertex: np.ndarray,
+    b: np.ndarray,
+) -> float:
+    """
+    Compute the interior angle (degrees) at vertex between vectors (vertex->a)
+    and (vertex->b).
+
+    Returns 0.0 if either vector is degenerate (near-zero length).
+    """
+    v1 = a - vertex
+    v2 = b - vertex
+    denom = np.linalg.norm(v1) * np.linalg.norm(v2)
+    if denom < 1e-9:
+        return 0.0
+    cos_val = np.clip(np.dot(v1, v2) / denom, -1.0, 1.0)
+    return float(np.degrees(np.arccos(cos_val)))
+
+
+def compute_angle_error(
     gt_kpts: Dict[int, np.ndarray],
     pred_kpts: Dict[int, np.ndarray],
-    bone_pairs: List[BonePair],
+    angle_triplets: List[AngleTriplet],
 ) -> Dict[str, float]:
     """
-    Compute the angle in degrees between corresponding bone direction vectors.
-
-    For each bone, the direction vector is computed as (distal - proximal),
-    normalised to unit length. The error is the angle between the GT and pred
-    unit vectors, giving a view-invariant measure of limb orientation difference.
+    Compute the absolute angular error (degrees) at each triplet vertex
+    between GT and predicted poses.
 
     Args:
-        gt_kpts:    Ground truth normalised (and Procrustes-aligned) keypoints.
-        pred_kpts:  Predicted normalised keypoints.
-        bone_pairs: BonePair list from the BodyRegion.
+        gt_kpts:        Ground truth normalised keypoints.
+        pred_kpts:      Predicted normalised keypoints.
+        angle_triplets: AngleTriplet list from the BodyRegion.
 
     Returns:
-        Dict mapping bone name to angular error in degrees [0, 180].
+        Dict mapping triplet name to angular error in degrees.
+        Triplets where any of the three keypoints are missing are omitted.
     """
     errors: Dict[str, float] = {}
-    for bone in bone_pairs:
-        if (
-            bone.proximal_index not in gt_kpts or bone.distal_index not in gt_kpts
-            or bone.proximal_index not in pred_kpts or bone.distal_index not in pred_kpts
-        ):
+    for triplet in angle_triplets:
+        idxs = (triplet.vertex_index, triplet.a_index, triplet.b_index)
+        if any(i not in gt_kpts or i not in pred_kpts for i in idxs):
             continue
-
-        v_gt   = gt_kpts[bone.distal_index]   - gt_kpts[bone.proximal_index]
-        v_pred = pred_kpts[bone.distal_index] - pred_kpts[bone.proximal_index]
-
-        n_gt   = float(np.linalg.norm(v_gt))
-        n_pred = float(np.linalg.norm(v_pred))
-        if n_gt < 1e-6 or n_pred < 1e-6:
-            continue
-
-        cos_a = np.clip(np.dot(v_gt / n_gt, v_pred / n_pred), -1.0, 1.0)
-        errors[bone.name] = float(np.degrees(np.arccos(cos_a)))
-
+        gt_angle   = _angle_between(gt_kpts[triplet.a_index],   gt_kpts[triplet.vertex_index],   gt_kpts[triplet.b_index])
+        pred_angle = _angle_between(pred_kpts[triplet.a_index], pred_kpts[triplet.vertex_index], pred_kpts[triplet.b_index])
+        errors[triplet.name] = abs(gt_angle - pred_angle)
     return errors
 
 
-def compute_bone_angle_accuracy(
+def compute_angle_accuracy(
     gt_kpts: Dict[int, np.ndarray],
     pred_kpts: Dict[int, np.ndarray],
-    bone_pairs: List[BonePair],
+    angle_triplets: List[AngleTriplet],
 ) -> Dict[str, float]:
     """
-    Compute Gaussian-kernel accuracy for each bone direction pair.
+    Compute Gaussian-kernel accuracy for each triplet's angular error.
 
-    Formula: accuracy = exp(-error^2 / (2 * sigma_deg^2))
-    At 0 error -> 1.0; at sigma_deg error -> ~0.61; at 2*sigma_deg -> ~0.14.
+    Formula: accuracy = exp(-error_deg^2 / (2 * sigma_deg^2))
+    At 0 deg error -> 1.0; at sigma_deg error -> ~0.61; at 2*sigma_deg -> ~0.14.
 
     Args:
-        gt_kpts:    Ground truth normalised (and Procrustes-aligned) keypoints.
-        pred_kpts:  Predicted normalised keypoints.
-        bone_pairs: BonePair list from the BodyRegion.
+        gt_kpts:        Ground truth normalised keypoints.
+        pred_kpts:      Predicted normalised keypoints.
+        angle_triplets: AngleTriplet list from the BodyRegion.
 
     Returns:
-        Dict mapping bone name to accuracy in [0, 1].
+        Dict mapping triplet name to accuracy in [0, 1].
     """
     scores: Dict[str, float] = {}
-    for bone in bone_pairs:
-        if (
-            bone.proximal_index not in gt_kpts or bone.distal_index not in gt_kpts
-            or bone.proximal_index not in pred_kpts or bone.distal_index not in pred_kpts
-        ):
+    for triplet in angle_triplets:
+        idxs = (triplet.vertex_index, triplet.a_index, triplet.b_index)
+        if any(i not in gt_kpts or i not in pred_kpts for i in idxs):
             continue
-
-        v_gt   = gt_kpts[bone.distal_index]   - gt_kpts[bone.proximal_index]
-        v_pred = pred_kpts[bone.distal_index] - pred_kpts[bone.proximal_index]
-
-        n_gt   = float(np.linalg.norm(v_gt))
-        n_pred = float(np.linalg.norm(v_pred))
-        if n_gt < 1e-6 or n_pred < 1e-6:
-            continue
-
-        cos_a = np.clip(np.dot(v_gt / n_gt, v_pred / n_pred), -1.0, 1.0)
-        err   = float(np.degrees(np.arccos(cos_a)))
-        scores[bone.name] = float(np.exp(-err ** 2 / (2.0 * bone.sigma_deg ** 2)))
-
+        gt_angle   = _angle_between(gt_kpts[triplet.a_index],   gt_kpts[triplet.vertex_index],   gt_kpts[triplet.b_index])
+        pred_angle = _angle_between(pred_kpts[triplet.a_index], pred_kpts[triplet.vertex_index], pred_kpts[triplet.b_index])
+        err = abs(gt_angle - pred_angle)
+        scores[triplet.name] = float(np.exp(-err ** 2 / (2.0 * triplet.sigma_deg ** 2)))
     return scores
