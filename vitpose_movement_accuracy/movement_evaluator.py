@@ -484,6 +484,7 @@ if __name__ == "__main__":
         output_dir.mkdir(parents=True, exist_ok=True)
 
         comparison_image_paths: List[Path] = []
+        all_results: List[Dict] = []
 
         for key, gt_file, pred_file in pairs:
             print(f"\n{'=' * 62}")
@@ -502,6 +503,7 @@ if __name__ == "__main__":
                 results = evaluator.evaluate()
                 evaluator.print_results(results)
                 evaluator.save_results(results, output_dir / f"{key}_results.json")
+                all_results.append(results)
             except RuntimeError as exc:
                 print(f"  Evaluation failed: {exc}")
 
@@ -510,6 +512,68 @@ if __name__ == "__main__":
             comparison_image_paths.append(comp_path)
 
         generate_slideshow_video(comparison_image_paths, output_dir / "comparison_slideshow.mp4")
+
+        # Batch summary across all successfully evaluated pairs
+        if all_results:
+            separator = "=" * 62
+            print(f"\n{separator}")
+            print(f"  BATCH SUMMARY  ({len(all_results)} of {len(pairs)} pairs evaluated)")
+            print(separator)
+
+            overall_accs = [r["overall_mean_accuracy"]        for r in all_results]
+            overall_errs = [r["overall_mean_angle_error_deg"] for r in all_results]
+            print(f"  Overall Accuracy (mean)    : {np.mean(overall_accs) * 100:.1f}%")
+            print(f"  Overall Accuracy (range)   : {min(overall_accs) * 100:.1f}% - {max(overall_accs) * 100:.1f}%")
+            print(f"  Overall Angle Error (mean) : {np.mean(overall_errs):.1f} deg")
+            print()
+
+            region_names = args.regions if args.regions is not None else DEFAULT_REGIONS
+            for region_name in region_names:
+                region_accs = [
+                    r["regions"][region_name]["mean_accuracy"]
+                    for r in all_results if region_name in r["regions"]
+                ]
+                region_errs = [
+                    r["regions"][region_name]["mean_angle_error_deg"]
+                    for r in all_results if region_name in r["regions"]
+                ]
+                if not region_accs:
+                    continue
+                print(
+                    f"  {region_name:<20} "
+                    f"accuracy: {np.mean(region_accs) * 100:.1f}%"
+                    f"  |  mean error: {np.mean(region_errs):.1f} deg"
+                )
+
+                sample_region = next(
+                    (r["regions"][region_name] for r in all_results if region_name in r["regions"]),
+                    None,
+                )
+                if sample_region:
+                    for triplet_name in sample_region["angles"]:
+                        triplet_accs = [
+                            r["regions"][region_name]["angles"][triplet_name]["mean_accuracy"]
+                            for r in all_results
+                            if region_name in r["regions"]
+                            and triplet_name in r["regions"][region_name]["angles"]
+                        ]
+                        triplet_errs = [
+                            r["regions"][region_name]["angles"][triplet_name]["mean_angle_error_deg"]
+                            for r in all_results
+                            if region_name in r["regions"]
+                            and triplet_name in r["regions"][region_name]["angles"]
+                        ]
+                        if triplet_accs:
+                            print(
+                                f"    {triplet_name:<34} "
+                                f"{np.mean(triplet_accs) * 100:.1f}%"
+                                f"  |  {np.mean(triplet_errs):.1f} deg"
+                                f"  ({len(triplet_accs)}/{len(all_results)} pairs)"
+                            )
+                        else:
+                            print(f"    {triplet_name:<34} no valid data")
+                print()
+            print(separator)
 
     else:
         evaluator = MovementEvaluator(
