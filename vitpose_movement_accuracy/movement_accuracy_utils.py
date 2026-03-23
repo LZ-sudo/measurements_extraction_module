@@ -1,9 +1,47 @@
 """
 Movement Accuracy Utility Functions
 
-Provides keypoint extraction from video or image, torso-relative pose normalization,
-joint interior-angle error computation, skeleton visualization, and batch output
-helpers (directory pairing, slideshow generation).
+Provides keypoint extraction from images, torso-relative pose normalisation,
+joint interior-angle error computation, skeleton visualisation, and batch
+output helpers (directory pairing, slideshow generation).
+
+This module operates on single images only.
+
+Known limitations
+-----------------
+Camera perspective mismatch
+    The metric compares 2D keypoint positions extracted from a real camera
+    photograph and a Blender render.  Real cameras have lens distortion and
+    varying focal lengths and cannot match Blender's camera exactly.  The
+    same physical pose may therefore project to different pixel positions in
+    each image, introducing systematic errors unrelated to pose quality.
+
+ViTPose domain gap
+    ViTPose was trained on photographs of real people.  Rendered avatars have
+    a visually different appearance (flat lighting, uniform skin, no texture
+    variation) which can degrade keypoint localisation on the model images and
+    produce spuriously low or high confidence scores.
+
+Unsigned interior angles are direction-blind
+    The shoulder angle measures elevation (deviation from hanging straight
+    down) but cannot distinguish whether the arm is pointing forward, sideways,
+    or inward at the same elevation.  Two poses with the same elevation but
+    opposite lateral directions will receive the same shoulder score.
+
+Gaussian scoring inflates accuracy
+    The formula exp(-e^2 / 2*sigma^2) maps to ~0.61 at sigma deg error.
+    With sigma=15 deg the score for a 15-degree error is already 61%, which
+    produces high overall accuracy even for poses with moderate deviations.
+
+Single-frame snapshot dependency
+    Images capture a moment in time.  Minor timing differences between when
+    the GT photograph and the model render were taken can shift the apparent
+    pose and affect scores independently of overall pose quality.
+
+IMU sensor drift propagation
+    The ground-truth pose is driven by IMU sensor data which accumulates drift
+    over time.  The GT image may therefore not perfectly reflect the subject's
+    actual joint angles at that moment, making the reference itself noisy.
 """
 
 import re
@@ -37,7 +75,8 @@ def is_image_path(path: Path) -> bool:
     """Return True if the path points to a recognised image file type."""
     return path.suffix.lower() in _IMAGE_EXTENSIONS
 
-# COCO-WholeBody body joint indices used as normalization anchors.
+
+# COCO-WholeBody body joint indices used as normalisation anchors.
 _LEFT_SHOULDER_IDX  = 5
 _RIGHT_SHOULDER_IDX = 6
 _LEFT_HIP_IDX       = 11
@@ -72,90 +111,20 @@ def _select_main_person(keypoints_dict: dict) -> Optional[np.ndarray]:
     return best_person
 
 
-def extract_keypoints_from_video(
-    video_path: str,
-    device: Optional[str] = None,
-    yolo_size: int = 320,
-) -> List[Optional[np.ndarray]]:
-    """
-    Extract per-frame raw keypoints from a video using ViTPose-H (wholebody).
-
-    Args:
-        video_path: Path to the input video file.
-        device: Device to run on ('cpu', 'cuda', 'mps', or None for auto-detect).
-        yolo_size: YOLO input image size.
-
-    Returns:
-        List with one entry per frame. Each entry is either:
-        - np.ndarray of shape (133, 3) as (y, x, score) if a person was detected, or
-        - None if no person was detected in that frame.
-    """
-    video_path = Path(video_path)
-    if not video_path.exists():
-        raise FileNotFoundError(f"Video not found: {video_path}")
-
-    vitpose_path, yolo_path = get_model_paths("h", "yolov8s")
-
-    model = VitInference(
-        vitpose_path,
-        yolo_path,
-        model_name="h",
-        yolo_size=yolo_size,
-        is_video=True,
-        device=device,
-    )
-
-    cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
-        raise RuntimeError(f"Cannot open video: {video_path}")
-
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    frame_keypoints: List[Optional[np.ndarray]] = []
-    frame_idx = 0
-
-    print(f"Extracting keypoints: {video_path.name} ({total_frames} frames)")
-
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        keypoints_dict = model.inference(img_rgb)
-        frame_keypoints.append(_select_main_person(keypoints_dict))
-
-        frame_idx += 1
-        if frame_idx % 50 == 0:
-            print(f"  {frame_idx}/{total_frames} frames processed")
-
-    cap.release()
-
-    if hasattr(model, "reset"):
-        model.reset()
-
-    valid_count = sum(1 for k in frame_keypoints if k is not None)
-    print(f"  Done. Valid frames: {valid_count}/{len(frame_keypoints)}")
-
-    return frame_keypoints
-
-
 def extract_keypoints_from_image(
     image_path: str,
     device: Optional[str] = None,
-) -> List[Optional[np.ndarray]]:
+) -> Optional[np.ndarray]:
     """
     Extract keypoints from a single image using ViTPose-H (wholebody).
-
-    Returns a single-element list for compatibility with the video pipeline.
 
     Args:
         image_path: Path to the input image file.
         device: Device to run on ('cpu', 'cuda', 'mps', or None for auto-detect).
 
     Returns:
-        List containing one entry:
-        - np.ndarray of shape (133, 3) as (y, x, score) if a person was detected, or
-        - None if no person was detected.
+        np.ndarray of shape (133, 3) as (y, x, score) if a person was detected,
+        or None if no person was detected.
     """
     image_path = Path(image_path)
     if not image_path.exists():
@@ -184,7 +153,7 @@ def extract_keypoints_from_image(
     print(f"Extracting keypoints: {image_path.name} (single image)")
     print(f"  Done. Valid frames: {valid}/1")
 
-    return [kpts]
+    return kpts
 
 
 def normalize_pose(frame_kpts: np.ndarray) -> Optional[Dict[int, np.ndarray]]:
@@ -193,7 +162,7 @@ def normalize_pose(frame_kpts: np.ndarray) -> Optional[Dict[int, np.ndarray]]:
 
     Anchors all positions to the hip midpoint and scales by the average
     shoulder-to-hip distance. This makes the metric invariant to subject
-    scale and camera distance differences between the two videos.
+    scale and camera distance differences between the two images.
 
     Uses whichever anchor joints are above CONFIDENCE_THRESHOLD rather than
     requiring all four. Requires at least one valid hip and at least one valid
@@ -246,33 +215,14 @@ def normalize_pose(frame_kpts: np.ndarray) -> Optional[Dict[int, np.ndarray]]:
     return normalized
 
 
-def build_frame_vector(
-    normalized_kpts: Dict[int, np.ndarray],
-    joint_indices: List[int],
-) -> Optional[np.ndarray]:
-    """
-    Flatten tracked joint (x, y) coordinates into a 1D vector for video-mode
-    frame filtering. Returns None if any requested joint index is missing
-    (i.e., below confidence threshold for that frame).
-    """
-    coords = []
-    for idx in joint_indices:
-        if idx not in normalized_kpts:
-            return None
-        coords.append(normalized_kpts[idx])
-    return np.concatenate(coords)
-
-
-
-
 def _angle_between(
     a: np.ndarray,
     vertex: np.ndarray,
     b: np.ndarray,
 ) -> float:
     """
-    Compute the interior angle (degrees) at vertex between vectors (vertex->a)
-    and (vertex->b).
+    Compute the unsigned interior angle (degrees) at vertex between vectors
+    (vertex->a) and (vertex->b).
 
     Returns 0.0 if either vector is degenerate (near-zero length).
     """
@@ -358,13 +308,13 @@ REGION_COLORS: Dict[str, tuple] = {
 # Fixed colors for shared torso landmarks so they are not overwritten by
 # whichever arm region is drawn last.
 _TORSO_JOINT_COLORS: Dict[int, tuple] = {
-    5:  (50, 200, 50),    # left shoulder  → green (matches left_arm)
-    6:  (50, 130, 255),   # right shoulder → orange (matches right_arm)
-    11: (180, 180, 180),  # left hip       → gray
-    12: (180, 180, 180),  # right hip      → gray
+    5:  (50, 200, 50),    # left shoulder  -> green (matches left_arm)
+    6:  (50, 130, 255),   # right shoulder -> orange (matches right_arm)
+    11: (180, 180, 180),  # left hip       -> gray
+    12: (180, 180, 180),  # right hip      -> gray
 }
 
-# Arm skeleton connections (shoulder→elbow→wrist→finger bases).
+# Arm skeleton connections (shoulder->elbow->wrist->finger bases).
 # Thumb uses CMC (92 left, 113 right); other fingers use MCP.
 _REGION_CONNECTIONS: Dict[str, List[tuple]] = {
     "left_arm": [
@@ -388,7 +338,7 @@ _TORSO_COLOR: tuple = (180, 180, 180)  # gray BGR
 
 
 # ---------------------------------------------------------------------------
-# Frame and sequence utilities
+# Frame utilities
 # ---------------------------------------------------------------------------
 
 def resize_to_height(image: np.ndarray, height: int) -> np.ndarray:
@@ -397,59 +347,6 @@ def resize_to_height(image: np.ndarray, height: int) -> np.ndarray:
         return image
     scale = height / image.shape[0]
     return cv2.resize(image, (int(image.shape[1] * scale), height))
-
-
-def collect_joint_indices(regions: List[BodyRegion]) -> List[int]:
-    """
-    Return a deduplicated ordered list of joint indices required for frame
-    filtering and angle computation across the given regions.
-
-    Only indices referenced by angle_triplets are included. Visualization-only
-    joints (e.g. finger chains) are excluded so that low-confidence finger
-    detections do not disqualify an otherwise valid frame.
-    Torso anchors (5, 6, 11, 12) are added explicitly as a safety net for
-    normalize_pose even if not covered by any triplet.
-    """
-    seen: set = set()
-    indices: List[int] = []
-    for region in regions:
-        for triplet in region.angle_triplets:
-            for idx in (triplet.vertex_index, triplet.a_index, triplet.b_index):
-                if idx not in seen:
-                    indices.append(idx)
-                    seen.add(idx)
-    for idx in (5, 6, 11, 12):
-        if idx not in seen:
-            indices.append(idx)
-            seen.add(idx)
-    return indices
-
-
-def build_valid_sequence(
-    frame_keypoints: List[Optional[np.ndarray]],
-    joint_indices: List[int],
-) -> Tuple[List[np.ndarray], List[int]]:
-    """
-    Build a normalized frame-vector sequence for video inputs, skipping frames
-    where any tracked joint is missing or below the confidence threshold.
-    Used for video-mode 1:1 frame pairing.
-
-    Returns:
-        Tuple of (vectors, original_frame_indices).
-    """
-    vectors: List[np.ndarray] = []
-    valid_frame_indices: List[int] = []
-    for frame_idx, kpts in enumerate(frame_keypoints):
-        if kpts is None:
-            continue
-        normalized = normalize_pose(kpts)
-        if normalized is None:
-            continue
-        vec = build_frame_vector(normalized, joint_indices)
-        if vec is not None:
-            vectors.append(vec)
-            valid_frame_indices.append(frame_idx)
-    return vectors, valid_frame_indices
 
 
 # ---------------------------------------------------------------------------
@@ -466,7 +363,7 @@ def draw_keypoints_on_image(
 
     Drawing order (back to front):
       1. Torso box (hip bar, shoulder bar, side lines) in gray.
-      2. Arm connections (shoulder→elbow→wrist→fingers) in arm colors.
+      2. Arm connections (shoulder->elbow->wrist->fingers) in arm colors.
       3. Joint circles: shoulders and hips use fixed colors; arm joints use
          their region color.
 
