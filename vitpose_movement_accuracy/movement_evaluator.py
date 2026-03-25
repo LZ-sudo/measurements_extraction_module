@@ -31,11 +31,6 @@ Unsigned interior angles are direction-blind
     the same shoulder score, because the unsigned angle cannot distinguish
     direction.
 
-Gaussian scoring inflates accuracy
-    exp(-e^2 / 2*sigma^2) maps to ~0.61 at sigma deg error.  With sigma=15 deg
-    a 15-degree error already scores 61%, producing high overall accuracy even
-    for poses with moderate deviations.
-
 Single-frame snapshot dependency
     Each evaluation compares one GT photograph to one model render.  Minor
     timing differences between captures can shift the apparent pose
