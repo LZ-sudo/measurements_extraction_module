@@ -5,8 +5,8 @@ Detects 21 hand landmarks per hand using MediaPipe's HandLandmarker.
 The model file (hand_landmarker.task, ~29 MB) is downloaded automatically
 from Google's model storage on first use and cached in weight_files/.
 
-Output schema is identical to vitpose_detection/hand_detection.py so this
-module can serve as a drop-in replacement once validated.
+Output schema matches the pipeline's hand detection format used by
+measurement_extraction/extract_measurements.py.
 
 Handedness note: MediaPipe labels hands from the image's perspective (not the
 subject's). In a front-facing photo the person's left hand sits on the LEFT
