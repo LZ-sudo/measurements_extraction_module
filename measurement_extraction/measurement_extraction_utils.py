@@ -98,14 +98,14 @@ def measure_height_in_pixels(
     image_height: int
 ) -> Optional[float]:
     """
-    Measure subject height in pixels from YOLOv8 head detection and pose data.
+    Measure subject height in pixels from VGGHeads head detection and pose data.
 
-    Uses YOLOv8 head detection for the top (head bounding box top edge) and
+    Uses VGGHeads head detection for the top (head bounding box top edge) and
     pose heel landmarks for the bottom (feet). This is used to calculate the
     plane shift factor for depth correction.
 
     Args:
-        head_data: YOLOv8 head detection data with head_top_y
+        head_data: VGGHeads head detection data with head_top_y
         pose_data: Pose detection data with heel landmarks
         image_height: Image height in pixels
 
@@ -113,7 +113,7 @@ def measure_height_in_pixels(
         Height in pixels, or None if data is invalid
     """
     try:
-        # Get head top from YOLOv8 head detection
+        # Get head top from VGGHeads head detection
         if not head_data or not head_data.get('head_detected'):
             print("  WARNING: No head detected, cannot measure height in pixels")
             return None
@@ -197,7 +197,7 @@ def apply_calibration_shift(
         calibration_data: Original calibration data from ArUco backdrop calibration
         shift_factor: Initial shift factor from calculate_shift_factor()
         known_height_cm: Subject's known height (stored for reference)
-        head_data: YOLOv8 head detection data (required if iterate=True)
+        head_data: VGGHeads head detection data (required if iterate=True)
         pose_data: Pose detection data (required if iterate=True)
         image_path: Path to image (required if iterate=True)
         iterate: Whether to perform iterative refinement (default: False)
@@ -501,14 +501,14 @@ def extract_height(
     pose_data: Optional[Dict] = None
 ) -> Optional[float]:
     """
-    Extract height measurement using YOLOv8 head detection and pose heel landmarks.
+    Extract height measurement using VGGHeads head detection and pose heel landmarks.
 
-    Uses YOLOv8 head detection for the top (head bounding box top edge) and
+    Uses VGGHeads head detection for the top (head bounding box top edge) and
     pose heel landmarks for the bottom (feet). This approach provides consistent
     head top detection regardless of hair volume.
 
     Args:
-        head_data: YOLOv8 head detection data with head_top_y
+        head_data: VGGHeads head detection data with head_top_y
         calibration_data: Calibration data with backdrop_corners and cm_per_normalized_unit
         image_path: Path to the image (needed for dimensions)
         pose_data: Optional pose detection data with heel landmarks for feet position
@@ -517,7 +517,7 @@ def extract_height(
         Height in centimeters, or None if data is invalid
     """
     try:
-        # Get head top from YOLOv8 head detection
+        # Get head top from VGGHeads head detection
         if not head_data or not head_data.get('head_detected'):
             print("  ERROR: No head detected - cannot extract height")
             return None
@@ -531,7 +531,7 @@ def extract_height(
         head_bbox = head_data.get('head_bbox', {})
         x_top = (head_bbox.get('x1', 0.5) + head_bbox.get('x2', 0.5)) / 2
 
-        print(f"  Using YOLOv8 head detection for head top (y={y_top:.4f})")
+        print(f"  Using VGGHeads head detection for head top (y={y_top:.4f})")
 
         # Get feet position from heel landmarks
         y_bottom = None

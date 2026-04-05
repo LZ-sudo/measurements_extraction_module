@@ -11,7 +11,7 @@ measurements_extraction_module/
 ├── .gitmodules                    # Git submodule configuration
 ├── mediapipe_detection/           # Segmentation and head width detection
 │   ├── head_detection.py          # Head width via MediaPipe Pose (ear landmarks)
-│   └── hair_segmentation.py       # Hair segmentation with YOLOv8 head detection
+│   └── hair_segmentation.py       # Hair segmentation with VGGHeads head detection
 ├── vitpose_detection/             # High-accuracy pose detection (easyViTPose)
 │   ├── config_model.py            # Model configuration and downloading
 │   ├── pose_detection.py          # Body pose landmarks (133 wholebody keypoints)
@@ -21,8 +21,9 @@ measurements_extraction_module/
 │   ├── body_region_config.py      # Body region and angle triplet definitions
 │   ├── movement_accuracy_utils.py # Keypoint extraction, normalization, DTW, angle computation
 │   └── movement_evaluator.py      # Main evaluator class and CLI
-├── yolov8_detection/              # YOLOv8-based head detection for height
-│   └── head_detection.py          # Head bounding box detection (CrowdHuman)
+├── vggheads_detection/            # VGGHeads-based head detection for height (MIT license)
+│   ├── __init__.py
+│   └── head_detection.py          # Head bounding box detection (HuggingFace: okupyn/vgg_heads)
 ├── measurement_calibration/       # ArUco-based calibration system
 │   ├── calibrate_backdrop.py      # ArUco marker backdrop calibration
 │   ├── calibration_utils.py       # Calibration helper functions
@@ -53,14 +54,14 @@ measurements_extraction_module/
 - **Automatic Model Download**: Models downloaded from Hugging Face Hub and cached locally
 - **Better Occlusion Handling**: Superior accuracy for challenging poses and clothing occlusion
 
-### Head Detection for Height (YOLOv8)
-- **Accurate Head Top Detection**: YOLOv8 model trained on CrowdHuman dataset for reliable head bounding box detection
+### Head Detection for Height (VGGHeads)
+- **Accurate Head Top Detection**: VGGHeads model (MIT license) for reliable head bounding box detection
 - **Hair-Invariant Height Measurement**: Uses head bounding box top edge instead of body segmentation, providing consistent results regardless of hair volume
-- **Automatic Model Download**: Model downloaded from Google Drive on first run and cached in `weight_files/`
-- Model source: [Owen718/Head-Detection-Yolov8](https://github.com/Owen718/Head-Detection-Yolov8)
+- **Automatic Model Download**: TorchScript model downloaded automatically from HuggingFace (`okupyn/vgg_heads`) on first run
+- Model source: [KupynOrest/head_detector](https://github.com/KupynOrest/head_detector)
 
 ### Segmentation (MediaPipe)
-- **Hair Segmentation**: Combined with YOLOv8 head detection for accurate hair boundary detection in full-body images
+- **Hair Segmentation**: Combined with VGGHeads head detection for accurate hair boundary detection in full-body images
 - **Head Width Detection**: Via MediaPipe Pose ear landmarks (7 & 8)
 
 ### ArUco Marker-Based Calibration
@@ -79,7 +80,7 @@ measurements_extraction_module/
 - **Comparison Visualization**: Generates a side-by-side PNG with arm skeleton and torso reference frame overlaid for image inputs
 
 ### Measurements Extracted
-- **Height**: Full body height from heel landmarks to head top (using YOLOv8 head detection)
+- **Height**: Full body height from heel landmarks to head top (using VGGHeads head detection)
 - **Hair Length**: Vertical hair measurement
 - **Width Measurements**: Head width, shoulder width, hip width
 - **Bilateral Measurements**: Upper/lower arm, upper/lower leg, shoulder-to-waist (averaged left/right)
@@ -109,9 +110,10 @@ pip install -r requirements.txt
 - `pose_landmarker_heavy.task` (~30MB) - for head width detection
 - `hair_segmenter.tflite` - for hair segmentation
 
-**YOLOv8 Head Detection Model** (downloaded automatically on first run to `weight_files/`):
-- `best.pt` (~130MB) - YOLOv8 model trained on CrowdHuman for head detection
+**VGGHeads Head Detection Model** (downloaded automatically on first use from HuggingFace):
+- `vgg_heads_l.trcd` (~large) - VGGHeads TorchScript model (MIT license, `okupyn/vgg_heads`)
 - Used for: Height measurement (head top detection) and hair segmentation (head region localization)
+- No manual download required; cached by `huggingface_hub` after first use
 
 **ViTPose Models** (downloaded automatically on first run):
 - `vitpose-h-wholebody.pth` (~350MB) - ViTPose-Huge for pose detection
@@ -382,7 +384,7 @@ Contains detailed calibration data including:
 
 - [easyViTPose](https://github.com/JunkyByte/easy_ViTPose) - High-accuracy pose estimation used by both pose detection and movement accuracy evaluation
 - [ViTPose Paper](https://arxiv.org/abs/2204.12484) - Vision Transformer for Generic Body Pose Estimation
-- [Head-Detection-Yolov8](https://github.com/Owen718/Head-Detection-Yolov8) - YOLOv8 head detection model trained on CrowdHuman dataset
+- [VGGHeads / head_detector](https://github.com/KupynOrest/head_detector) - VGGHeads head detection model (MIT license)
 - [Mediapipe Pose Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker/python)
 - [OpenCV ArUco Marker Detection](https://docs.opencv.org/4.x/d5/dae/tutorial_aruco_detection.html)
 - [Camera Calibration with OpenCV](https://docs.opencv.org/4.x/dc/dbb/tutorial_py_calibration.html)

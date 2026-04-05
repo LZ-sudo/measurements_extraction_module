@@ -3,7 +3,7 @@ Measurement Extraction Orchestrator
 
 This script orchestrates the complete measurement extraction process:
 1. Runs detection scripts to extract landmark coordinates:
-   - YOLOv8 for head detection (accurate head top for height measurement)
+   - VGGHeads for head detection (accurate head top for height measurement)
    - ViTPose for pose and hand detection (highest accuracy)
    - MediaPipe for hair segmentation and head width
 2. Loads calibration data from backdrop calibration
@@ -32,8 +32,8 @@ from mediapipe_detection.head_detection import detect_head_width
 from vitpose_detection.pose_detection import detect_pose
 from vitpose_detection.hand_detection import detect_hands
 
-# Import YOLOv8 head detection (for accurate head top position in height measurement)
-from yolov8_detection.head_detection import detect_head
+# Import VGGHeads head detection (MIT license, replaces YOLOv8)
+from vggheads_detection.head_detection import detect_head
 
 # Import measurement utilities
 from measurement_extraction.measurement_extraction_utils import (
@@ -133,12 +133,12 @@ class MeasurementExtractor:
         Returns:
             Dictionary containing all detection results
         """
-        print("Running detections (ViTPose + MediaPipe + YOLOv8)...")
+        print("Running detections (ViTPose + MediaPipe + VGGHeads)...")
 
         detections = {}
 
-        # 1. Head detection using YOLOv8 (for accurate head top position in height)
-        print("  - Head detection (YOLOv8)...")
+        # 1. Head detection using VGGHeads (for accurate head top position in height)
+        print("  - Head detection (VGGHeads)...")
         try:
             head_output = self._get_intermediate_path("head_detection")
             detections['head'] = detect_head(
@@ -235,7 +235,7 @@ class MeasurementExtractor:
             print(f"\n   Applying depth correction using known height: {self.known_height_cm} cm")
 
             # Get image dimensions
-            image_width, image_height = get_image_dimensions(self.image_path)
+            _, image_height = get_image_dimensions(self.image_path)
 
             # Measure subject height in pixels using head detection
             measured_height_px = measure_height_in_pixels(
@@ -281,7 +281,7 @@ class MeasurementExtractor:
                 print(f"   WARNING: Could not measure height in pixels, using original calibration")
                 measurements['plane_shift_applied'] = False
 
-        # Extract height using YOLOv8 head detection
+        # Extract height using VGGHeads head detection
         if detections.get('head') and detections['head'].get('head_detected'):
             height_cm = extract_height(
                 detections['head'],

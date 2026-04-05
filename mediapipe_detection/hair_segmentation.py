@@ -2,7 +2,7 @@
 Hair Segmentation Module using MediaPipe Image Segmenter
 
 This script performs hair segmentation on an image using MediaPipe's Image Segmenter
-with a custom hair segmentation model, combined with YOLOv8 head detection to improve accuracy.
+with a custom hair segmentation model, combined with VGGHeads head detection to improve accuracy.
 Extracts normalized hair length coordinates for measurements.
 """
 
@@ -18,7 +18,7 @@ from PIL import Image
 class HairSegmenter:
     """
     A class to perform hair segmentation on images using MediaPipe.
-    Uses YOLOv8 head detection to locate the head region for better segmentation accuracy.
+    Uses VGGHeads head detection to locate the head region for better segmentation accuracy.
     """
 
     def __init__(self, model_path: Optional[str] = None, use_face_detection: bool = True):
@@ -28,7 +28,7 @@ class HairSegmenter:
         Args:
             model_path: Path to hair segmentation model (.tflite file).
                        If None, looks for hair_segmenter.tflite in weight_files.
-            use_face_detection: Whether to use YOLOv8 head detection to locate head region first.
+            use_face_detection: Whether to use VGGHeads head detection to locate head region first.
                               This significantly improves accuracy for full-body images.
         """
         from mediapipe.tasks import python
@@ -36,23 +36,15 @@ class HairSegmenter:
 
         self.use_face_detection = use_face_detection
 
-        # Initialize YOLOv8 head detector if needed
+        # Initialize VGGHeads head detector if needed
         if use_face_detection:
             try:
-                from ultralytics import YOLO
-                head_model_path = os.path.join(
-                    os.path.dirname(os.path.dirname(__file__)),
-                    "weight_files",
-                    "best.pt"
-                )
-                if os.path.exists(head_model_path):
-                    self.head_detector = YOLO(head_model_path)
-                    print("[*] YOLOv8 head detector loaded successfully")
-                else:
-                    print(f"Warning: Head detector not found at {head_model_path}. Proceeding without head detection.")
-                    self.use_face_detection = False
-                    self.head_detector = None
-            except (ImportError, Exception) as e:
+                import sys as _sys
+                _sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+                from vggheads_detection.head_detection import HeadDetector
+                self.head_detector = HeadDetector()
+                print("[*] VGGHeads head detector loaded successfully")
+            except Exception as e:
                 print(f"Warning: Could not load head detector: {e}. Proceeding without head detection.")
                 self.use_face_detection = False
                 self.head_detector = None
@@ -86,7 +78,7 @@ class HairSegmenter:
 
     def _get_head_region(self, image: np.ndarray) -> Tuple[int, int, int, int]:
         """
-        Detect head using YOLOv8 and estimate head region including hair.
+        Detect head using VGGHeads and estimate head region including hair.
 
         Args:
             image: Input image as numpy array (BGR format).
@@ -96,32 +88,26 @@ class HairSegmenter:
         """
         h, w = image.shape[:2]
 
-        # Run YOLOv8 head detection
-        results = self.head_detector(image, verbose=False)
+        result = self.head_detector.detect(image)
 
-        if results and len(results) > 0:
-            result = results[0]
-            if result.boxes and len(result.boxes) > 0:
-                # Get the first (highest confidence) detection
-                box = result.boxes[0]
-                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+        if result.get('head_detected') and result.get('head_bbox_pixels'):
+            px = result['head_bbox_pixels']
+            face_left = int(px['x1'])
+            face_top = int(px['y1'])
+            face_right = int(px['x2'])
+            face_bottom = int(px['y2'])
 
-                face_left = int(x1)
-                face_top = int(y1)
-                face_right = int(x2)
-                face_bottom = int(y2)
+            face_width = face_right - face_left
+            face_height = face_bottom - face_top
 
-                face_width = face_right - face_left
-                face_height = face_bottom - face_top
+            # Estimate head region (expand to include hair)
+            # Hair can extend significantly, especially for long hair on female subjects
+            head_top = max(0, face_top - int(face_height * 1.2))    # Expand up for hair volume
+            head_bottom = min(h, face_bottom + int(face_height * 2.5))  # Expand down for long hair
+            head_left = max(0, face_left - int(face_width * 0.6))
+            head_right = min(w, face_right + int(face_width * 0.6))
 
-                # Estimate head region (expand to include hair)
-                # Hair can extend significantly, especially for long hair on female subjects
-                head_top = max(0, face_top - int(face_height * 1.2))  # Expand up more for hair volume
-                head_bottom = min(h, face_bottom + int(face_height * 2.5))  # Expand down for long hair
-                head_left = max(0, face_left - int(face_width * 0.6))  # Expand sides more
-                head_right = min(w, face_right + int(face_width * 0.6))
-
-                return head_top, head_bottom, head_left, head_right
+            return head_top, head_bottom, head_left, head_right
 
         # No head detected, use top portion of image
         return 0, int(h * 0.5), 0, w
@@ -329,7 +315,7 @@ class HairSegmenter:
     def close(self):
         """Release resources."""
         self.segmenter.close()
-        # YOLOv8 head_detector doesn't require explicit cleanup
+        # VGGHeads head_detector doesn't require explicit cleanup
 
 
 def segment_hair(

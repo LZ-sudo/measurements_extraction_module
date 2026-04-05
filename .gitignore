@@ -6,4 +6,3 @@ __pycache__/
 camera_calibration_inputs/
 CLAUDE.md
 weight_files/best.pt
-weight_files/sam2.1_t.pt

@@ -11,12 +11,11 @@ filterpy==1.4.5
 # pose estimation (easyViTPose)
 easy_ViTPose @ git+https://github.com/JunkyByte/easy_ViTPose.git
 huggingface_hub>=0.20.0
-ultralytics==8.4.5
 scikit-image==0.26.0
 ffmpeg==1.4
 
 # hair classification model requirements
-torch>=2.0.0
+torch>=2.0.1
 torchvision>=0.15.0
 timm>=0.9.0
 albumentations>=1.3.0
@@ -31,5 +30,4 @@ matplotlib>=3.7.0
 # aruco marker requirements
 reportlab==4.4.9
 
-#gdrive autoinstall for YoloV8 head detection weight files
-gdown>=5.0.0
+# VGGHeads downloads weights automatically from HuggingFace on first use
