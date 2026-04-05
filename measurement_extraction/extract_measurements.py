@@ -4,8 +4,8 @@ Measurement Extraction Orchestrator
 This script orchestrates the complete measurement extraction process:
 1. Runs detection scripts to extract landmark coordinates:
    - VGGHeads for head detection (accurate head top for height measurement)
-   - ViTPose for pose and hand detection (highest accuracy)
-   - MediaPipe for hair segmentation and head width
+   - ViTPose for pose detection (highest accuracy)
+   - MediaPipe for hair segmentation, head width, and hand detection
 2. Loads calibration data from backdrop calibration
 3. Converts normalized coordinates to real-world measurements in cm
 4. Outputs separate JSON files for hair and body measurements
@@ -28,9 +28,11 @@ sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from mediapipe_detection.hair_segmentation import segment_hair
 from mediapipe_detection.head_detection import detect_head_width
 
-# Import ViTPose detection modules (for pose and hand - highest accuracy)
+# Import ViTPose detection modules (for pose - highest accuracy)
 from vitpose_detection.pose_detection import detect_pose
-from vitpose_detection.hand_detection import detect_hands
+
+# Import MediaPipe hand detection (better T-pose accuracy than ViTPose wholebody hands)
+from mediapipe_detection.hand_detection import detect_hands
 
 # Import VGGHeads head detection (MIT license, replaces YOLOv8)
 from vggheads_detection.head_detection import detect_head
@@ -195,8 +197,8 @@ class MeasurementExtractor:
         except Exception as e:
             print(f"     Head width detection failed: {e}")
 
-        # 5. Hand detection using ViTPose (for hand length)
-        print("  - Hand detection (ViTPose)...")
+        # 5. Hand detection using MediaPipe (better T-pose accuracy)
+        print("  - Hand detection (MediaPipe)...")
         try:
             hand_output = self._get_intermediate_path("hand_detection")
             detections['hands'] = detect_hands(
