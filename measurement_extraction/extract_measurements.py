@@ -66,7 +66,8 @@ class MeasurementExtractor:
         output_dir: Optional[str] = None,
         save_intermediates: bool = False,
         camera_calibration_path: Optional[str] = None,
-        known_height_cm: Optional[float] = None
+        known_height_cm: Optional[float] = None,
+        visualization_dir: Optional[str] = None,
     ):
         """
         Initialize the measurement extractor.
@@ -78,11 +79,13 @@ class MeasurementExtractor:
             save_intermediates: Whether to save intermediate landmark JSON files
             camera_calibration_path: Optional path to camera calibration JSON for undistortion
             known_height_cm: Optional subject's known height in cm for depth correction
+            visualization_dir: Optional directory to save measurement visualization image
         """
         self.image_path = image_path
         self.calibration_path = calibration_path
         self.camera_calibration_path = camera_calibration_path
         self.known_height_cm = known_height_cm
+        self.visualization_dir = visualization_dir
 
         # Set output directory
         if output_dir is None:
@@ -353,6 +356,169 @@ class MeasurementExtractor:
 
         return measurements
 
+    def _create_measurement_visualization(self, detections: Dict) -> Optional[str]:
+        """
+        Draw body measurement landmarks and lines on the ArUco visualization.
+
+        Loads aruco_backdrop_detection.jpg (or the original image as fallback) as the
+        base, overlays a semi-transparent filled polygon on the backdrop region, then
+        draws coloured line segments and landmark points for each of the 9 measurements
+        (head width, shoulder width, hip width, upper arm, forearm, upper leg, lower leg,
+        shoulder-to-waist, hand length). A colour legend is added in the top-right corner.
+        The result is saved as measurement_visualization.jpg in visualization_dir.
+
+        Args:
+            detections: Dictionary of all detection results from run_detections()
+
+        Returns:
+            Path to the saved visualization, or None on failure
+        """
+        try:
+            import cv2
+            from pathlib import Path as _Path
+
+            pose_data = detections.get('pose', {})
+            hands_data = detections.get('hands', {})
+
+            # Load original image as the clean base
+            original = cv2.imread(self.image_path)
+            if original is None:
+                print(f"Warning: Could not load original image: {self.image_path}")
+                return None
+
+            # Blend ArUco visualization at 50% opacity over the original so its
+            # marker lines are visible but subdued, keeping measurement lines prominent
+            aruco_vis_path = _Path(self.visualization_dir) / 'aruco_backdrop_detection.jpg'
+            if aruco_vis_path.exists():
+                aruco_vis = cv2.imread(str(aruco_vis_path))
+                if aruco_vis is not None and aruco_vis.shape == original.shape:
+                    image = cv2.addWeighted(aruco_vis, 0.50, original, 0.50, 0)
+                else:
+                    image = original.copy()
+            else:
+                image = original.copy()
+
+            h, w = image.shape[:2]
+
+            def to_px(lm):
+                return (int(lm['x'] * w), int(lm['y'] * h))
+
+            def draw_segment(img, pt1, pt2, color, label=None):
+                cv2.line(img, pt1, pt2, color, 2, cv2.LINE_AA)
+                for pt in (pt1, pt2):
+                    cv2.circle(img, pt, 5, color, -1, cv2.LINE_AA)
+                    cv2.circle(img, pt, 5, (255, 255, 255), 1, cv2.LINE_AA)
+                if label:
+                    mid = ((pt1[0] + pt2[0]) // 2 + 6, (pt1[1] + pt2[1]) // 2 - 4)
+                    cv2.putText(img, label, mid, cv2.FONT_HERSHEY_SIMPLEX, 0.42,
+                                (0, 0, 0), 3, cv2.LINE_AA)
+                    cv2.putText(img, label, mid, cv2.FONT_HERSHEY_SIMPLEX, 0.42,
+                                color, 1, cv2.LINE_AA)
+
+            # Distinct BGR colours per measurement
+            C = {
+                'head_width':     (30,  180, 255),
+                'shoulder_width': (0,   220,   0),
+                'hip_width':      (220,   0, 200),
+                'upper_arm':      (0,   140, 255),
+                'forearm':        (0,   255, 150),
+                'upper_leg':      (180,   0, 255),
+                'lower_leg':      (255, 160,   0),
+                'shoulder_waist': (0,   200, 255),
+                'hand_length':    (200,  80, 200),
+            }
+
+            # 1. Head width  (landmark_7 <-> landmark_8)
+            hw = pose_data.get('head_width', {})
+            lm7, lm8 = hw.get('landmark_7'), hw.get('landmark_8')
+            if lm7 and lm8:
+                draw_segment(image, to_px(lm7), to_px(lm8), C['head_width'], 'Head W')
+
+            # 2. Shoulder width  (landmark_11 <-> landmark_12)
+            sw = pose_data.get('shoulder_width', {})
+            lm11, lm12 = sw.get('landmark_11'), sw.get('landmark_12')
+            if lm11 and lm12:
+                draw_segment(image, to_px(lm11), to_px(lm12), C['shoulder_width'], 'Shoulder W')
+
+            # 3. Hip width  (landmark_23 <-> landmark_24)
+            hiw = pose_data.get('hip_width', {})
+            lm23, lm24 = hiw.get('landmark_23'), hiw.get('landmark_24')
+            if lm23 and lm24:
+                draw_segment(image, to_px(lm23), to_px(lm24), C['hip_width'], 'Hip W')
+
+            # 4–8. Bilateral measurements — draw both sides, label on left only
+            bilateral = [
+                ('upper_arm_length',  [('left',  'landmark_11', 'landmark_13'),
+                                       ('right', 'landmark_12', 'landmark_14')],
+                 C['upper_arm'],     'Upper Arm'),
+                ('forearm_length',    [('left',  'landmark_13', 'landmark_15'),
+                                       ('right', 'landmark_14', 'landmark_16')],
+                 C['forearm'],       'Forearm'),
+                ('upper_leg_length',  [('left',  'landmark_23', 'landmark_25'),
+                                       ('right', 'landmark_24', 'landmark_26')],
+                 C['upper_leg'],     'Upper Leg'),
+                ('lower_leg_length',  [('left',  'landmark_25', 'landmark_27'),
+                                       ('right', 'landmark_26', 'landmark_28')],
+                 C['lower_leg'],     'Lower Leg'),
+                ('shoulder_to_waist', [('left',  'landmark_11', 'landmark_23'),
+                                       ('right', 'landmark_12', 'landmark_24')],
+                 C['shoulder_waist'], 'Shld-Waist'),
+            ]
+            for data_key, sides, color, base_label in bilateral:
+                seg_data = pose_data.get(data_key, {})
+                for i, (side_key, key_a, key_b) in enumerate(sides):
+                    side = seg_data.get(side_key, {})
+                    lm_a, lm_b = side.get(key_a), side.get(key_b)
+                    if lm_a and lm_b:
+                        label = base_label if i == 0 else None
+                        draw_segment(image, to_px(lm_a), to_px(lm_b), color, label)
+
+            # 9. Hand length  (wrist landmark_0 -> middle finger tip landmark_12)
+            for hand in hands_data.get('hands', []):
+                hl = hand.get('hand_length', {})
+                lm0, lm12h = hl.get('landmark_0'), hl.get('landmark_12')
+                if lm0 and lm12h:
+                    draw_segment(image, to_px(lm0), to_px(lm12h), C['hand_length'], 'Hand')
+
+            # Colour legend (top-right corner)
+            legend_items = [
+                ('Head W',      C['head_width']),
+                ('Shoulder W',  C['shoulder_width']),
+                ('Hip W',       C['hip_width']),
+                ('Upper Arm',   C['upper_arm']),
+                ('Forearm',     C['forearm']),
+                ('Upper Leg',   C['upper_leg']),
+                ('Lower Leg',   C['lower_leg']),
+                ('Shld-Waist',  C['shoulder_waist']),
+                ('Hand',        C['hand_length']),
+            ]
+            line_h = 22
+            legend_x = w - 160
+            legend_y0 = 40
+            leg_overlay = image.copy()
+            cv2.rectangle(
+                leg_overlay,
+                (legend_x - 8, legend_y0 - 16),
+                (w - 5, legend_y0 + len(legend_items) * line_h + 4),
+                (20, 20, 20), -1,
+            )
+            image = cv2.addWeighted(leg_overlay, 0.60, image, 0.40, 0)
+            for j, (name, color) in enumerate(legend_items):
+                y = legend_y0 + j * line_h
+                cv2.line(image, (legend_x, y), (legend_x + 20, y), color, 3, cv2.LINE_AA)
+                cv2.putText(image, name, (legend_x + 26, y + 5),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.42, color, 1, cv2.LINE_AA)
+
+            output_path = _Path(self.visualization_dir) / 'measurement_visualization.jpg'
+            cv2.imwrite(str(output_path), image)
+            return str(output_path)
+
+        except Exception as e:
+            print(f"Warning: Could not create measurement visualization: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
     def save_outputs(self, measurements: Dict, output_prefix: Optional[str] = None):
         """
         Save measurement outputs to separate JSON files.
@@ -432,6 +598,12 @@ class MeasurementExtractor:
             # Step 3: Save outputs
             output_paths = self.save_outputs(measurements, output_prefix)
 
+            # Step 4: Create measurement visualization if requested
+            if self.visualization_dir:
+                vis_path = self._create_measurement_visualization(detections)
+                if vis_path:
+                    print(f"   Measurement visualization saved to: {vis_path}")
+
             print()
             print("="*70)
             print("EXTRACTION COMPLETE")
@@ -451,7 +623,8 @@ def extract_measurements(
     output_prefix: Optional[str] = None,
     save_intermediates: bool = False,
     camera_calibration_path: Optional[str] = None,
-    known_height_cm: Optional[float] = None
+    known_height_cm: Optional[float] = None,
+    visualization_dir: Optional[str] = None,
 ) -> tuple:
     """
     Convenience function to run measurement extraction pipeline.
@@ -474,7 +647,8 @@ def extract_measurements(
         output_dir,
         save_intermediates,
         camera_calibration_path,
-        known_height_cm
+        known_height_cm,
+        visualization_dir,
     )
     return extractor.run(output_prefix)
 

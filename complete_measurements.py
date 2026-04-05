@@ -186,7 +186,8 @@ class CompleteMeasurementPipeline:
             output_prefix=output_prefix,
             save_intermediates=False,  # Don't save intermediate detection JSONs
             camera_calibration_path=self.camera_calibration_path,
-            known_height_cm=self.known_height_cm
+            known_height_cm=self.known_height_cm,
+            visualization_dir=self.output_visualization_dir,
         )
 
         # Load and combine measurements
