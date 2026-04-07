@@ -542,7 +542,7 @@ class MeasurementExtractor:
             f"{output_prefix}_body_measurements.json"
         )
         body_output = {
-            "measurements": measurements['body_measurements']
+            "body_measurements": measurements['body_measurements']
         }
         with open(body_output_path, 'w', encoding='utf-8') as f:
             json.dump(body_output, f, indent=2)

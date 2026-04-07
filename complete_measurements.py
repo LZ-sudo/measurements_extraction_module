@@ -204,7 +204,7 @@ class CompleteMeasurementPipeline:
         # If user specified custom output path, save combined measurements there
         if self.output_measurements_path and not self.output_measurements_path.endswith('_body_measurements.json'):
             combined_measurements = {
-                "body_measurements": body_data.get("measurements", {}),
+                "body_measurements": body_data.get("body_measurements", {}),
                 "hair_measurements": hair_data.get("hair_measurement", {})
             }
 
@@ -215,7 +215,7 @@ class CompleteMeasurementPipeline:
                 print(f"\nCombined measurements saved to: {self.output_measurements_path}")
 
         return {
-            "body_measurements": body_data.get("measurements", {}),
+            "body_measurements": body_data.get("body_measurements", {}),
             "hair_measurements": hair_data.get("hair_measurement", {})
         }
 
