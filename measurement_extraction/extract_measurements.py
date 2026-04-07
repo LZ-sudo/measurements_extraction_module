@@ -388,17 +388,19 @@ class MeasurementExtractor:
                 print(f"Warning: Could not load original image: {self.image_path}")
                 return None
 
-            # Blend ArUco visualization at 50% opacity over the original so its
-            # marker lines are visible but subdued, keeping measurement lines prominent
+            # Overlay ArUco marker drawings onto the original without blurring.
+            # Only pixels that differ between the ArUco vis and the original
+            # (i.e. the drawn lines/corners) are composited; everything else
+            # stays pixel-perfect from the original.
+            image = original.copy()
             aruco_vis_path = _Path(self.visualization_dir) / 'aruco_backdrop_detection.jpg'
             if aruco_vis_path.exists():
                 aruco_vis = cv2.imread(str(aruco_vis_path))
                 if aruco_vis is not None and aruco_vis.shape == original.shape:
-                    image = cv2.addWeighted(aruco_vis, 0.50, original, 0.50, 0)
-                else:
-                    image = original.copy()
-            else:
-                image = original.copy()
+                    diff = cv2.absdiff(aruco_vis, original)
+                    mask = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+                    _, mask = cv2.threshold(mask, 10, 255, cv2.THRESH_BINARY)
+                    image[mask > 0] = aruco_vis[mask > 0]
 
             h, w = image.shape[:2]
 
@@ -429,6 +431,21 @@ class MeasurementExtractor:
                 'shoulder_waist': (0,   200, 255),
                 'hand_length':    (200,  80, 200),
             }
+
+            # 0. Head bounding box (VGGHeads)
+            head_data = detections.get('head', {})
+            head_bbox = head_data.get('head_bbox')
+            if head_bbox:
+                bx1 = int(head_bbox['x1'] * w)
+                by1 = int(head_bbox['y1'] * h)
+                bx2 = int(head_bbox['x2'] * w)
+                by2 = int(head_bbox['y2'] * h)
+                box_color = (30, 180, 255)
+                cv2.rectangle(image, (bx1, by1), (bx2, by2), box_color, 2, cv2.LINE_AA)
+                cv2.putText(image, 'Head', (bx1, by1 - 6),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 0, 0), 3, cv2.LINE_AA)
+                cv2.putText(image, 'Head', (bx1, by1 - 6),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.42, box_color, 1, cv2.LINE_AA)
 
             # 1. Head width  (landmark_7 <-> landmark_8)
             hw = pose_data.get('head_width', {})
