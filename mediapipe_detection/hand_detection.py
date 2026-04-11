@@ -322,8 +322,8 @@ if __name__ == "__main__":
         help="Path to save visualisation image with landmarks",
     )
     parser.add_argument(
-        "--conf", type=float, default=0.5,
-        help="Minimum hand detection confidence (default: 0.5)",
+        "--conf", type=float, default=0.3,
+        help="Minimum hand detection confidence (default: 0.3)",
     )
     args = parser.parse_args()
 
