@@ -273,7 +273,15 @@ class ArUcoBackdropCalibrator:
         backdrop_corners: np.ndarray,
         calibration_data: Dict
     ):
-        """Save visualization image showing detected markers and backdrop corners."""
+        """
+        Save visualization image showing detected markers and backdrop corners.
+
+        Args:
+            image: Undistorted input image (BGR) to annotate
+            marker_dict: Dictionary mapping marker ID to corner coordinates
+            backdrop_corners: 4x2 array of backdrop corner positions
+            calibration_data: Calibration result dictionary used for overlay text
+        """
         vis = image.copy()
 
         # Draw detected markers

@@ -256,7 +256,12 @@ class MovementEvaluator:
         return results
 
     def print_results(self, results: Dict) -> None:
-        """Print evaluation results in a formatted layout."""
+        """
+        Print evaluation results in a formatted layout.
+
+        Args:
+            results: Evaluation result dictionary returned by evaluate().
+        """
         separator = "=" * 62
         print(f"\n{separator}")
         print("  MOVEMENT ACCURACY EVALUATION RESULTS")
@@ -287,7 +292,13 @@ class MovementEvaluator:
         print(separator)
 
     def save_results(self, results: Dict, output_path: Path) -> None:
-        """Serialize evaluation results and source metadata to a JSON file."""
+        """
+        Serialize evaluation results and source metadata to a JSON file.
+
+        Args:
+            results: Evaluation result dictionary returned by evaluate().
+            output_path: Destination path for the output JSON file.
+        """
         payload = {
             "gt_source":   str(self.gt_source),
             "pred_source": str(self.pred_source),
@@ -310,6 +321,10 @@ class MovementEvaluator:
         results may be None when evaluation failed (e.g. insufficient landmark
         confidence). Keypoints are still drawn where detectable and the accuracy
         indicator shows UNKNOWN.
+
+        Args:
+            results: Evaluation result dictionary from evaluate(), or None if evaluation failed.
+            output_path: Destination path for the output comparison PNG image.
         """
         gt_img   = cv2.imread(str(self.gt_source))
         pred_img = cv2.imread(str(self.pred_source))

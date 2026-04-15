@@ -27,7 +27,16 @@ _IMAGE_SIZE = 640
 
 
 def _load_model(model_name: str, device: torch.device) -> torch.jit.ScriptModule:
-    """Download and load the VGGHeads TorchScript model from HuggingFace."""
+    """
+    Download and load the VGGHeads TorchScript model from HuggingFace.
+
+    Args:
+        model_name: Model filename stem to download (e.g. 'vgg_heads_l').
+        device: Torch device to load the model onto.
+
+    Returns:
+        Loaded and eval-mode TorchScript ScriptModule.
+    """
     model_path = hf_hub_download(_REPO_ID, f"{model_name}.trcd")
     loaded = torch.jit.load(model_path, map_location=device)
     loaded.eval()
@@ -37,6 +46,10 @@ def _load_model(model_name: str, device: torch.device) -> torch.jit.ScriptModule
 def _preprocess(image_rgb: np.ndarray, device: torch.device) -> Tuple[torch.Tensor, Tuple[int, int], float]:
     """
     Resize with aspect ratio, pad to IMAGE_SIZE x IMAGE_SIZE, normalise to [0, 1].
+
+    Args:
+        image_rgb: Input image as numpy array in RGB format.
+        device: Torch device to place the output tensor on.
 
     Returns:
         tensor: (1, 3, H, W) float tensor on device
@@ -81,6 +94,17 @@ def _nms(
     """
     Apply confidence filtering and NMS, return pixel boxes and scores as numpy arrays.
     Mirrors the logic in head_detector/utils.py without needing the package.
+
+    Args:
+        boxes: Raw bounding box tensor from the model output.
+        scores: Confidence score tensor from the model output.
+        confidence_threshold: Minimum score to retain a detection.
+        iou_threshold: IoU threshold for non-maximum suppression.
+        top_k: Maximum candidates to consider before NMS.
+        keep_top_k: Maximum detections to retain after NMS.
+
+    Returns:
+        Tuple of (boxes_numpy, scores_numpy) as float32 numpy arrays.
     """
     boxes_f = boxes.detach().float().squeeze(0)
     scores_f = scores.detach().float().squeeze(0).squeeze(-1)
@@ -107,7 +131,17 @@ def _postprocess_boxes(
     padding: Tuple[int, int],
     scale: float,
 ) -> np.ndarray:
-    """Reverse the padding and scaling to recover pixel coordinates in the original image."""
+    """
+    Reverse the padding and scaling to recover pixel coordinates in the original image.
+
+    Args:
+        boxes_xyxy: Bounding boxes in (x1, y1, x2, y2) format from the padded/scaled space.
+        padding: (pad_x, pad_y) pixels that were added to left and top during preprocessing.
+        scale: Scale factor applied during resize, used to invert the transformation.
+
+    Returns:
+        Bounding boxes mapped back to original image pixel coordinates as int array.
+    """
     if len(boxes_xyxy) == 0:
         return boxes_xyxy
     boxes = boxes_xyxy.copy().clip(0, _IMAGE_SIZE)
@@ -129,12 +163,27 @@ class HeadDetector:
         model: str = _DEFAULT_MODEL,
         conf_threshold: float = 0.5,
     ):
+        """
+        Initialize the HeadDetector.
+
+        Args:
+            model: VGGHeads model name to download from HuggingFace (default: 'vgg_heads_l').
+            conf_threshold: Minimum confidence score to accept a head detection.
+        """
         self.conf_threshold = conf_threshold
         self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self._model = _load_model(model, self._device)
 
     def _select_main_head_idx(self, boxes: np.ndarray) -> Optional[int]:
-        """Return index of the head with the largest bounding box area."""
+        """
+        Return index of the head with the largest bounding box area.
+
+        Args:
+            boxes: Array of bounding boxes in (x1, y1, x2, y2) pixel format.
+
+        Returns:
+            Integer index of the largest box, or None if boxes is empty.
+        """
         if len(boxes) == 0:
             return None
         areas = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
@@ -143,6 +192,9 @@ class HeadDetector:
     def detect(self, image: np.ndarray) -> Dict:
         """
         Detect heads in a BGR image and return normalised bounding box data.
+
+        Args:
+            image: Input image as numpy array (BGR format).
 
         Returns:
             head_detected (bool)
@@ -208,7 +260,16 @@ class HeadDetector:
         return result
 
     def visualize(self, image: np.ndarray, detection_result: Optional[Dict] = None) -> np.ndarray:
-        """Draw head bounding boxes on a BGR image."""
+        """
+        Draw head bounding boxes on a BGR image.
+
+        Args:
+            image: Input image as numpy array (BGR format).
+            detection_result: Optional pre-computed result from detect(). Runs detect() if None.
+
+        Returns:
+            Annotated BGR image with bounding boxes drawn.
+        """
         if detection_result is None:
             detection_result = self.detect(image)
 

@@ -150,6 +150,7 @@ def calibrate_camera_from_images(
 
 
 def main():
+    """Main entry point for camera calibration using checkerboard images."""
     parser = argparse.ArgumentParser(
         description="Calibrate camera using checkerboard pattern images"
     )

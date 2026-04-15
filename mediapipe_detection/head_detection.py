@@ -57,7 +57,12 @@ class HeadWidthDetector:
         self.landmarker = vision.PoseLandmarker.create_from_options(options)
 
     def _get_default_model(self) -> str:
-        """Get the default pose landmarker model path."""
+        """
+        Get the default pose landmarker model path.
+
+        Returns:
+            Path string to the pose_landmarker_heavy.task model file.
+        """
         # Check in weight_files directory first
         task_files_path = os.path.join(
             os.path.dirname(os.path.dirname(__file__)),

@@ -65,6 +65,7 @@ def undistort_image(
 
 
 def main():
+    """Main entry point for applying lens distortion correction to an image."""
     parser = argparse.ArgumentParser(
         description="Undistort an image using camera calibration data"
     )

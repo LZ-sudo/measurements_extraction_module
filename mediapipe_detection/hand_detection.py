@@ -74,6 +74,9 @@ def _get_model_path() -> str:
     """
     Return the path to hand_landmarker.task, downloading it if not present.
     The file is cached in weight_files/ next to the module root.
+
+    Returns:
+        Path string to the cached hand_landmarker.task model file.
     """
     weight_dir = Path(__file__).resolve().parent.parent / "weight_files"
     weight_dir.mkdir(parents=True, exist_ok=True)
@@ -129,7 +132,15 @@ class HandLandmarkDetector:
         self._landmarker = vision.HandLandmarker.create_from_options(options)
 
     def _landmarks_to_list(self, hand_landmarks) -> List[Dict]:
-        """Convert a MediaPipe NormalizedLandmark list to coordinate dicts."""
+        """
+        Convert a MediaPipe NormalizedLandmark list to coordinate dicts.
+
+        Args:
+            hand_landmarks: MediaPipe NormalizedLandmark iterable for one hand.
+
+        Returns:
+            List of dicts with 'x', 'y', 'z' float keys for each landmark.
+        """
         return [
             {"x": float(lm.x), "y": float(lm.y), "z": float(lm.z)}
             for lm in hand_landmarks

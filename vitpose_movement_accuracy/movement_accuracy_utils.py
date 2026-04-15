@@ -342,7 +342,16 @@ _TORSO_COLOR: tuple = (180, 180, 180)  # gray BGR
 # ---------------------------------------------------------------------------
 
 def resize_to_height(image: np.ndarray, height: int) -> np.ndarray:
-    """Scale an image to the given height, preserving aspect ratio."""
+    """
+    Scale an image to the given height, preserving aspect ratio.
+
+    Args:
+        image: Input BGR image as a numpy array.
+        height: Target height in pixels.
+
+    Returns:
+        Resized image with the specified height and proportional width.
+    """
     if image.shape[0] == height:
         return image
     scale = height / image.shape[0]
@@ -372,6 +381,9 @@ def draw_keypoints_on_image(
         kpts:    Raw keypoints array of shape (133, 3) as (y, x, score),
                  or None to return the image unchanged.
         regions: BodyRegion list used to determine which joints to draw.
+
+    Returns:
+        Annotated BGR image with torso frame and arm skeleton drawn.
     """
     img = image.copy()
     if kpts is None:
@@ -423,8 +435,12 @@ def pair_image_directories(
     each filename. Files are matched when their numeric key is the same in
     both directories (e.g. pose_1_gt.jpg pairs with pose_1_model.jpg via "1").
 
-    Returns a list of (key, gt_path, pred_path) tuples sorted by ascending
-    numeric key value.
+    Args:
+        gt_dir: Directory containing ground truth image files.
+        pred_dir: Directory containing predicted (model render) image files.
+
+    Returns:
+        List of (key, gt_path, pred_path) tuples sorted by ascending numeric key value.
     """
     def _key(path: Path) -> Optional[str]:
         m = re.search(r'\d+', path.stem)
@@ -447,6 +463,12 @@ def generate_slideshow_video(
     image for hold_seconds before advancing to the next.
 
     Images that differ in size from the first are resized to match.
+
+    Args:
+        image_paths: Ordered list of image file paths to include in the slideshow.
+        output_path: Destination path for the output MP4 file.
+        fps: Frames per second for the output video.
+        hold_seconds: Number of seconds to display each image before advancing.
     """
     if not image_paths:
         return

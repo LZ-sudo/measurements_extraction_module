@@ -20,11 +20,15 @@ from pydantic import BaseModel
 
 
 class JointInfo(BaseModel):
+    """Identifies a single joint by name and its COCO-WholeBody keypoint index."""
+
     name: str
     coco_index: int
 
 
 class AngleTriplet(BaseModel):
+    """Defines a three-point angle measurement at a joint vertex with a Gaussian tolerance."""
+
     name: str
     vertex_index: int  # joint where the angle is measured
     a_index: int       # proximal landmark (first arm of the angle)
@@ -33,6 +37,8 @@ class AngleTriplet(BaseModel):
 
 
 class BodyRegion(BaseModel):
+    """Groups a set of joints and their angle triplets for a named body region."""
+
     name: str
     joints: List[JointInfo]
     angle_triplets: List[AngleTriplet] = []

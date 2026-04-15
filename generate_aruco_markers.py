@@ -227,7 +227,16 @@ def create_a4_marker_sheet(output_path="aruco_markers_for_backdrop.pdf",
 
 
 def add_vertical_ruler(c, page_width, page_height, marker_size_cm, safe_margin):
-    """Add a vertical verification ruler on the right side of the page."""
+    """
+    Add a vertical verification ruler on the right side of the page.
+
+    Args:
+        c: ReportLab canvas to draw on
+        page_width: Page width in points
+        page_height: Page height in points
+        marker_size_cm: Physical marker size in cm, used to determine tick mark count
+        safe_margin: Safe margin in points used to position the ruler
+    """
     # Position ruler further to the right
     ruler_x = page_width - safe_margin - mm_to_points(10)
 

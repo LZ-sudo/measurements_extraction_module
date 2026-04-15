@@ -91,7 +91,16 @@ def get_model_paths(
     vitpose_model: str = DEFAULT_VITPOSE_MODEL,
     yolo_model: str = DEFAULT_YOLO_MODEL
 ) -> Tuple[str, str]:
-    """Get paths to ViTPose and YOLO model files, downloading if necessary."""
+    """
+    Get paths to ViTPose and YOLO model files, downloading if necessary.
+
+    Args:
+        vitpose_model: ViTPose model size key ('s', 'b', 'l', or 'h').
+        yolo_model: YOLO model key ('yolov8s' or 'yolov8m').
+
+    Returns:
+        Tuple of (vitpose_model_path, yolo_model_path) as strings.
+    """
     if vitpose_model not in VITPOSE_MODELS:
         raise ValueError(f"Invalid ViTPose model '{vitpose_model}'. Available: {list(VITPOSE_MODELS.keys())}")
     if yolo_model not in YOLO_MODELS:

@@ -545,6 +545,9 @@ class MeasurementExtractor:
         Args:
             measurements: Dictionary with body and hair measurements
             output_prefix: Optional prefix for output filenames
+
+        Returns:
+            Tuple of (body_output_path, hair_output_path) as strings
         """
         print("\nSaving outputs...")
 
@@ -656,6 +659,7 @@ def extract_measurements(
         save_intermediates: Whether to save intermediate landmark JSONs
         camera_calibration_path: Optional path to camera calibration JSON for undistortion
         known_height_cm: Optional subject's known height in cm for depth correction
+        visualization_dir: Optional directory to save measurement visualization image
 
     Returns:
         Tuple of (body_measurements_path, hair_measurements_path)
