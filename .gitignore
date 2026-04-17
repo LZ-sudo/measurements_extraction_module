@@ -6,3 +6,5 @@ __pycache__/
 camera_calibration_inputs/
 CLAUDE.md
 weight_files/best.pt
+weight_files/*.pth
+weight_files/yolov8*.pt
