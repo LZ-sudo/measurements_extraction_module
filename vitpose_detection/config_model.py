@@ -40,12 +40,19 @@ DEFAULT_YOLO_MODEL = 'yolov8s'
 
 
 def get_cache_dir() -> Path:
-    """Get the cache directory for ViTPose models (~/.cache/vitpose/)."""
-    cache_dir = os.getenv(
-        'VITPOSE_CACHE',
-        os.path.join(os.path.expanduser('~'), '.cache', 'vitpose')
-    )
-    cache_path = Path(cache_dir)
+    """Get the cache directory for ViTPose models.
+
+    Defaults to weight_files/ inside the measurements_extraction_module so the
+    full application directory is self-contained and portable (e.g. copied to a
+    thumbdrive and used on another machine). Can be overridden by setting the
+    VITPOSE_CACHE environment variable to an absolute path.
+    """
+    env_override = os.getenv('VITPOSE_CACHE')
+    if env_override:
+        cache_path = Path(env_override)
+    else:
+        # Two levels up from this file: vitpose_detection/ -> measurements_extraction_module/
+        cache_path = Path(__file__).resolve().parent.parent / "weight_files"
     cache_path.mkdir(parents=True, exist_ok=True)
     return cache_path
 
