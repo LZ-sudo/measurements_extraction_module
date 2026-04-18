@@ -10,6 +10,7 @@ filterpy==1.4.5
 
 # pose estimation (easyViTPose)
 easy_ViTPose @ git+https://github.com/JunkyByte/easy_ViTPose.git
+ultralytics>=8.0.0
 huggingface_hub>=0.20.0
 scikit-image==0.26.0
 ffmpeg==1.4
