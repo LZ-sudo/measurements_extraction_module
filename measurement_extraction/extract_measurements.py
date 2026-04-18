@@ -179,7 +179,9 @@ class MeasurementExtractor:
             )
             print(f"     Pose detection complete")
         except Exception as e:
+            import traceback
             print(f"     Pose detection failed: {e}")
+            traceback.print_exc()
             detections['pose'] = {}
 
         # 4. Head width detection using MediaPipe (better ear landmark accuracy)
